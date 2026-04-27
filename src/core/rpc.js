@@ -28,7 +28,8 @@ class RpcClient {
 
   /**
    * 执行只读调用
-   * @param {object} params - 调用参数 { to, data }
+   * @param {string} to - 目标合约地址
+   * @param {string} data - 调用数据
    * @returns {Promise<string>} 调用的返回值
    */
   async call(to, data) {
