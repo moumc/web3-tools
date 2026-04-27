@@ -1,3 +1,32 @@
-// 配置文件
-// 请从 config.example.json 复制并修改为您自己的配置
-// 敏感信息请通过环境变量注入，不要直接提交到 git
+{
+  "network": {
+    "rpcUrl": "https://aia-dataseed1.aiachain.org",
+    "chainId": 1319
+  },
+  "accounts": [
+    {
+      "address": "0x2908a72cdBEEBCDf6791Fcd080d9B1EEa5e77997",
+      "privateKey": "0xad801710aeb37f7f4f846f6f6275d9911e471b795d36ef3bb2d11ba6b10a345c"
+    },
+    {
+      "address": "0xB65289E4c7ddA1E641fA9FEF5f390b1b936E8b5b",
+      "privateKey": "0x06a4536d5d4f6a349224b8dbf676bbe705ed098aebf53554997513eb90ff89c5"
+    }
+  ],
+  "tokens": {
+    "targetToken": {
+      "address": "0x7F04240C95C81225Fb8e8a6CA30501323E5B15c3",
+      "name": "COT",
+      "decimals": 18
+    }
+  },
+  "contracts": {
+    "targetContract": {
+      "address": "0xA06704696b8419fCEc1249C4986053D6A8AE491e",
+      "input": "0xa9059cbb0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000001"
+    }
+  },
+  "execution": {
+    "logLevel": "info"
+  }
+}

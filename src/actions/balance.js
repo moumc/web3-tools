@@ -1,5 +1,8 @@
 import { ethers } from 'ethers';
 
+// ERC20 balanceOf(address) 函数选择器
+const ERC20_BALANCE_OF_SELECTOR = '0x70a08231';
+
 /**
  * 查询账户的原生币和代币余额
  * @param {Array} accounts - 账户列表 [{address, privateKey}]
@@ -43,9 +46,13 @@ async function queryBalances(accounts, tokens, rpcClient, logger) {
  * @returns {Promise<bigint>} 代币余额
  */
 async function queryTokenBalance(rpcClient, address, tokenAddress) {
-  // ERC20 balanceOf(address) 的函数签名
-  const data = '0x70a08231000000000000000000000000' + address.slice(2).toLowerCase();
-  const result = await rpcClient.call(tokenAddress, data);
+  // 规范化地址为 checksummed 格式
+  const normalizedAddress = ethers.getAddress(address);
+  const normalizedTokenAddress = ethers.getAddress(tokenAddress);
+
+  // 构建 ERC20 balanceOf(address) 调用数据
+  const data = ERC20_BALANCE_OF_SELECTOR + normalizedAddress.slice(2).toLowerCase();
+  const result = await rpcClient.call(normalizedTokenAddress, data);
   // 解析返回的余额值
   return ethers.toBigInt(result);
 }
