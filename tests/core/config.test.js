@@ -6,7 +6,7 @@ jest.unstable_mockModule('fs', () => ({
     existsSync: jest.fn(() => true),
     readFileSync: jest.fn(() => JSON.stringify({
       network: { rpcUrl: 'https://example.com', chainId: 1 },
-      accounts: [],
+      accounts: [{ address: '0x123456789012345678901234567890123456789a', privateKey: '0xabc123' }],
       tokens: {},
       contracts: {},
       execution: { logLevel: 'info' }
@@ -15,7 +15,7 @@ jest.unstable_mockModule('fs', () => ({
   existsSync: jest.fn(() => true),
   readFileSync: jest.fn(() => JSON.stringify({
     network: { rpcUrl: 'https://example.com', chainId: 1 },
-    accounts: [],
+    accounts: [{ address: '0x123456789012345678901234567890123456789a', privateKey: '0xabc123' }],
     tokens: {},
     contracts: {},
     execution: { logLevel: 'info' }

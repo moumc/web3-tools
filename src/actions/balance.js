@@ -51,7 +51,8 @@ async function queryTokenBalance(rpcClient, address, tokenAddress) {
   const normalizedTokenAddress = ethers.getAddress(tokenAddress);
 
   // 构建 ERC20 balanceOf(address) 调用数据
-  const data = ERC20_BALANCE_OF_SELECTOR + normalizedAddress.slice(2).toLowerCase();
+  const addressBytes = ethers.zeroPadValue(address, 32);
+  const data = ERC20_BALANCE_OF_SELECTOR + ethers.hexlify(addressBytes).slice(2);
   const result = await rpcClient.call(normalizedTokenAddress, data);
   // 解析返回的余额值
   return ethers.toBigInt(result);

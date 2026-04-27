@@ -67,11 +67,13 @@ async function executeContract(address, privateKey, contractName, contractInfo, 
   logger.info(`[${address}] 执行合约 ${contractName}: ${contractInfo.address}`);
 
   try {
+    const feeData = await rpcClient.provider.getFeeData();
     const tx = {
       to: contractInfo.address,
       data: contractInfo.input,
       value: 0,
-      gasLimit: DEFAULT_GAS_LIMIT
+      gasLimit: DEFAULT_GAS_LIMIT,
+      gasPrice: feeData.gasPrice
     };
 
     const signer = new ethers.Wallet(privateKey, rpcClient.provider);
