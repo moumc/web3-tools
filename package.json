@@ -1,0 +1,18 @@
+{
+  "name": "web3-tools",
+  "version": "1.0.0",
+  "description": "Ethereum-like blockchain batch operations tool",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "balance": "node src/index.js balance",
+    "execute": "node src/index.js execute",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js"
+  },
+  "dependencies": {
+    "ethers": "^6.13.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}
