@@ -44,4 +44,64 @@ describe('loadConfig', () => {
     const { loadConfig: newLoadConfig } = await import('../../src/core/config.js');
     expect(() => newLoadConfig('nonexistent.json')).toThrow('配置文件不存在');
   });
+
+  test('JSON格式错误应该抛出错误', async () => {
+    jest.resetModules();
+    jest.unstable_mockModule('fs', () => ({
+      default: {
+        existsSync: jest.fn(() => true),
+        readFileSync: jest.fn(() => 'invalid json{')
+      },
+      existsSync: jest.fn(() => true),
+      readFileSync: jest.fn(() => 'invalid json{')
+    }));
+    const { loadConfig: newLoadConfig } = await import('../../src/core/config.js');
+    expect(() => newLoadConfig('config.json')).toThrow('配置文件格式错误');
+  });
+
+  test('缺少必要字段应该抛出错误', async () => {
+    jest.resetModules();
+    jest.unstable_mockModule('fs', () => ({
+      default: {
+        existsSync: jest.fn(() => true),
+        readFileSync: jest.fn(() => JSON.stringify({
+          network: { rpcUrl: 'https://example.com' },
+          accounts: [],
+          // 缺少 tokens 和 contracts
+        }))
+      },
+      existsSync: jest.fn(() => true),
+      readFileSync: jest.fn(() => JSON.stringify({
+        network: { rpcUrl: 'https://example.com' },
+        accounts: [],
+        // 缺少 tokens 和 contracts
+      }))
+    }));
+    const { loadConfig: newLoadConfig } = await import('../../src/core/config.js');
+    expect(() => newLoadConfig('config.json')).toThrow('配置文件缺少必要字段');
+  });
+
+  test('network.rpcUrl缺失应该抛出错误', async () => {
+    jest.resetModules();
+    jest.unstable_mockModule('fs', () => ({
+      default: {
+        existsSync: jest.fn(() => true),
+        readFileSync: jest.fn(() => JSON.stringify({
+          network: { chainId: 1 }, // 缺少 rpcUrl
+          accounts: [],
+          tokens: {},
+          contracts: {}
+        }))
+      },
+      existsSync: jest.fn(() => true),
+      readFileSync: jest.fn(() => JSON.stringify({
+        network: { chainId: 1 }, // 缺少 rpcUrl
+        accounts: [],
+        tokens: {},
+        contracts: {}
+      }))
+    }));
+    const { loadConfig: newLoadConfig } = await import('../../src/core/config.js');
+    expect(() => newLoadConfig('config.json')).toThrow('network.rpcUrl');
+  });
 });
