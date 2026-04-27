@@ -23,8 +23,8 @@ jest.unstable_mockModule('../../src/core/rpc.js', () => ({
 
 const { queryBalances, queryTokenBalance } = await import('../../src/actions/balance.js');
 
-// 有效格式的以太坊地址 (40字符十六进制)
-const TEST_ADDRESS_1 = '0x1234567890123456789012345678901234567890';
+// 有效格式的以太坊地址 (40字符十六进制，仅使用 0-9 a-f)
+const TEST_ADDRESS_1 = '0x123456789012345678901234567890123456789a';
 const TEST_ADDRESS_2 = '0xabcd1234567890abcdef1234567890abcdef1234';
 const TEST_ADDRESS_3 = '0x5678901234567890abcdef1234567890abcdef12';
 const TEST_ADDRESS_4 = '0xdef01234567890abcdef1234567890abcdef1234';
@@ -124,10 +124,9 @@ describe('queryTokenBalance', () => {
     const result = await queryTokenBalance(mockRpc, address, tokenAddress);
 
     // 验证调用了正确的函数签名 (balanceOf)
-// 注意：ethers.getAddress 会将地址转换为 checksummed 格式
     expect(mockRpc.call).toHaveBeenCalledWith(
       '0xAbcd1234567890abcDeF1234567890AbCdeF1234',
-      '0x70a082311234567890123456789012345678901234567890'
+      '0x70a08231000000000000000000000000123456789012345678901234567890123456789a'
     );
     expect(result).toBe(1n);
   });
