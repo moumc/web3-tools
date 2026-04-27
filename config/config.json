@@ -1,28 +1,3 @@
-{
-  "network": {
-    "rpcUrl": "https://mainnet.infura.io/v3/YOUR_PROJECT_ID",
-    "chainId": 1
-  },
-  "accounts": [
-    {
-      "address": "0x0000000000000000000000000000000000000000",
-      "privateKey": "0x0000000000000000000000000000000000000000000000000000000000000000"
-    }
-  ],
-  "tokens": {
-    "targetToken": {
-      "address": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
-      "name": "USDT",
-      "decimals": 6
-    }
-  },
-  "contracts": {
-    "targetContract": {
-      "address": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
-      "input": "0xa9059cbb0000000000000000000000000000000000000000000000000000000000000002000000000000000000000000000000000000000000000000000000000000001"
-    }
-  },
-  "execution": {
-    "logLevel": "info"
-  }
-}
+// 配置文件
+// 请从 config.example.json 复制并修改为您自己的配置
+// 敏感信息请通过环境变量注入，不要直接提交到 git
