@@ -19,7 +19,8 @@ function loadConfig(configPath = 'config/config.json') {
   try {
     config = JSON.parse(content);
   } catch (e) {
-    throw new Error(`配置文件格式错误: ${e.message}`);
+    const message = e instanceof Error ? e.message : String(e);
+    throw new Error(`配置文件格式错误: ${message}`);
   }
 
   // 验证必要字段
@@ -28,6 +29,11 @@ function loadConfig(configPath = 'config/config.json') {
     if (!config[field]) {
       throw new Error(`配置文件缺少必要字段: ${field}`);
     }
+  }
+
+  // 验证 network.rpcUrl
+  if (!config.network.rpcUrl || typeof config.network.rpcUrl !== 'string') {
+    throw new Error(`配置文件缺少必要字段: network.rpcUrl`);
   }
 
   return config;
