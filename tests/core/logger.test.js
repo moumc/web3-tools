@@ -50,4 +50,27 @@ describe('Logger', () => {
     expect(consoleSpy).toHaveBeenCalled();
     consoleSpy.mockRestore();
   });
+
+  test('debug 方法应该打印调试级别日志', () => {
+    const debugLogger = new Logger({ logDir: 'logs', logLevel: 'debug' });
+    const consoleSpy = jest.spyOn(console, 'log').mockImplementation();
+    debugLogger.debug('debug message');
+    expect(consoleSpy).toHaveBeenCalled();
+    consoleSpy.mockRestore();
+  });
+
+  test('当 logLevel=info 时 debug 不应输出', () => {
+    const consoleSpy = jest.spyOn(console, 'log').mockImplementation();
+    logger.debug('debug message');
+    expect(consoleSpy).not.toHaveBeenCalled();
+    consoleSpy.mockRestore();
+  });
+
+  test('close 方法应该关闭日志流', () => {
+    const consoleSpy = jest.spyOn(console, 'log').mockImplementation();
+    logger.info('test');
+    logger.close();
+    expect(consoleSpy).toHaveBeenCalled();
+    consoleSpy.mockRestore();
+  });
 });
