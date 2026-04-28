@@ -38,7 +38,7 @@ async function main() {
   // 根据 action 执行对应功能
   try {
     if (action === 'balance') {
-      await queryBalances(config.accounts, config.tokens, rpcClient, logger);
+      await queryBalances(config.accounts, config.tokens, config.network.nativeSymbol, rpcClient, logger);
     } else if (action === 'execute') {
       await executeContracts(config.accounts, config.tokens, config.contracts, rpcClient, logger);
     } else {
