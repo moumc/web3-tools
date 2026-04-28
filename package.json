@@ -7,6 +7,7 @@
   "scripts": {
     "balance": "node src/index.js balance",
     "execute": "node src/index.js execute",
+    "collect": "node src/index.js collect",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js"
   },
   "dependencies": {
