@@ -21,7 +21,8 @@ const createMockRpc = () => ({
   getNativeBalance: jest.fn().mockResolvedValue('1000000000000000000'),
   call: jest.fn(),
   provider: {
-    getFeeData: jest.fn().mockResolvedValue({ gasPrice: BigInt(1000000000) })
+    getFeeData: jest.fn().mockResolvedValue({ gasPrice: BigInt(1000000000) }),
+    estimateGas: jest.fn().mockResolvedValue(BigInt(50000))
   }
 });
 
