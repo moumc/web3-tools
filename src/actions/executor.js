@@ -29,7 +29,9 @@ async function compareBalances(address, tokens, balanceBefore, rpcClient, logger
     try {
       const balanceAfter = await queryTokenBalance(rpcClient, address, tokenInfo.address);
       const tokenNameDisplay = tokenInfo.name || tokenName;
-      logger.info(`[${address}] ${tokenNameDisplay} 执行后余额: ${balanceAfter.toString()}`);
+      const decimals = tokenInfo.decimals || 18;
+      const formattedBalance = ethers.formatUnits(balanceAfter, decimals);
+      logger.info(`[${address}] ${tokenNameDisplay} 执行后余额: ${formattedBalance}`);
 
       balanceChanges[tokenName] = {
         before: balanceBefore[tokenName],
@@ -67,6 +69,22 @@ async function executeContract(address, privateKey, contractName, contractInfo, 
   logger.info(`[${address}] 执行合约 ${contractName}: ${contractInfo.address}`);
 
   try {
+    const signer = new ethers.Wallet(privateKey, rpcClient.provider);
+    const txRequest = {
+      to: contractInfo.address,
+      data: contractInfo.input,
+      value: 0,
+      from: address
+    };
+
+    // 先估算 gas，验证交易是否会成功
+    try {
+      await rpcClient.provider.estimateGas(txRequest);
+    } catch (estimateError) {
+      logger.warn(`[${address}] 交易预估失败（可能执行会回滚），跳过发送: ${estimateError.reason || estimateError.message}`);
+      return null;
+    }
+
     const feeData = await rpcClient.provider.getFeeData();
     const tx = {
       to: contractInfo.address,
@@ -76,7 +94,6 @@ async function executeContract(address, privateKey, contractName, contractInfo, 
       gasPrice: feeData.gasPrice
     };
 
-    const signer = new ethers.Wallet(privateKey, rpcClient.provider);
     const sentTx = await signer.sendTransaction(tx);
     logger.info(`[${address}] 交易已发送，等待确认... hash: ${sentTx.hash}`);
 
@@ -119,7 +136,9 @@ async function executeAccountContracts(account, tokens, contracts, rpcClient, lo
     try {
       balanceBefore[tokenName] = await queryTokenBalance(rpcClient, address, tokenInfo.address);
       const tokenNameDisplay = tokenInfo.name || tokenName;
-      logger.info(`[${address}] ${tokenNameDisplay} 执行前余额: ${balanceBefore[tokenName].toString()}`);
+      const decimals = tokenInfo.decimals || 18;
+      const formattedBalance = ethers.formatUnits(balanceBefore[tokenName], decimals);
+      logger.info(`[${address}] ${tokenNameDisplay} 执行前余额: ${formattedBalance}`);
     } catch (balanceError) {
       logger.error(`[${address}] 获取 ${tokenName} 执行前余额失败: ${balanceError.message}`);
       balanceBefore[tokenName] = BigInt(0);
