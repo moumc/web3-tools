@@ -1,7 +1,8 @@
 {
   "network": {
     "rpcUrl": "https://mainnet.infura.io/v3/YOUR_PROJECT_ID",
-    "chainId": 1
+    "chainId": 1,
+    "nativeSymbol": "ETH"
   },
   "accounts": [
     {

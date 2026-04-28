@@ -45,7 +45,7 @@ describe('queryBalances', () => {
     const accounts = [{ address: TEST_ADDRESS_1 }];
     const tokens = { targetToken: { address: TEST_ADDRESS_2, decimals: 18, name: 'Test Token' } };
 
-    await queryBalances(accounts, tokens, mockRpc, mockLogger);
+    await queryBalances(accounts, tokens, 'ETH', mockRpc, mockLogger);
 
     expect(mockRpc.getNativeBalance).toHaveBeenCalledWith(TEST_ADDRESS_1);
     expect(mockLogger.info).toHaveBeenCalled();
@@ -60,7 +60,7 @@ describe('queryBalances', () => {
     // 不提供 decimals，触发 || 18 的分支
     const tokens = { targetToken: { address: TEST_ADDRESS_2, name: 'Test Token' } };
 
-    await queryBalances(accounts, tokens, mockRpc, mockLogger);
+    await queryBalances(accounts, tokens, 'ETH', mockRpc, mockLogger);
 
     expect(mockRpc.getNativeBalance).toHaveBeenCalledWith(TEST_ADDRESS_1);
   });
@@ -78,7 +78,7 @@ describe('queryBalances', () => {
     ];
     const tokens = { targetToken: { address: TEST_ADDRESS_2, decimals: 18, name: 'Test Token' } };
 
-    await queryBalances(accounts, tokens, mockRpc, mockLogger);
+    await queryBalances(accounts, tokens, 'ETH', mockRpc, mockLogger);
 
     // 第一个账户失败，记录错误但继续处理
     expect(mockLogger.error).toHaveBeenCalledWith(expect.stringContaining(TEST_ADDRESS_3));
@@ -98,7 +98,7 @@ describe('queryBalances', () => {
     ];
     const tokens = { targetToken: { address: TEST_ADDRESS_2, decimals: 18, name: 'Test Token' } };
 
-    await queryBalances(accounts, tokens, mockRpc, mockLogger);
+    await queryBalances(accounts, tokens, 'ETH', mockRpc, mockLogger);
 
     // 验证每个账户都被查询
     expect(mockRpc.getNativeBalance).toHaveBeenCalledTimes(3);

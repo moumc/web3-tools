@@ -7,10 +7,12 @@ const ERC20_BALANCE_OF_SELECTOR = '0x70a08231';
  * 查询账户的原生币和代币余额
  * @param {Array} accounts - 账户列表 [{address, privateKey}]
  * @param {Object} tokens - 代币配置 { tokenName: { address, name, decimals } }
+ * @param {string} nativeSymbol - 原生币符号，如 ETH
  * @param {RpcClient} rpcClient - RPC 客户端
  * @param {Logger} logger - 日志实例
  */
-async function queryBalances(accounts, tokens, rpcClient, logger) {
+async function queryBalances(accounts, tokens, nativeSymbol, rpcClient, logger) {
+  const symbol = nativeSymbol || 'ETH';
   logger.info('=== 开始查询余额 ===');
 
   for (const account of accounts) {
@@ -20,7 +22,7 @@ async function queryBalances(accounts, tokens, rpcClient, logger) {
       // 查询原生币余额
       const nativeBalance = await rpcClient.getNativeBalance(address);
       const nativeInEth = ethers.formatEther(nativeBalance);
-      logger.info(`[${address}] 原生币余额: ${nativeInEth} ETH`);
+      logger.info(`[${address}] 原生币余额: ${nativeInEth} ${symbol}`);
 
       // 查询每个代币的余额
       for (const [tokenName, tokenInfo] of Object.entries(tokens)) {
