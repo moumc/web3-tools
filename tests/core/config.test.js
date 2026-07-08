@@ -104,4 +104,44 @@ describe('loadConfig', () => {
     const { loadConfig: newLoadConfig } = await import('../../src/core/config.js');
     expect(() => newLoadConfig('config.json')).toThrow('network.rpcUrl');
   });
+
+  test('accounts为空时应给出可操作的提示', async () => {
+    jest.resetModules();
+    jest.unstable_mockModule('fs', () => ({
+      default: {
+        existsSync: jest.fn(() => true),
+        readFileSync: jest.fn(() => JSON.stringify({
+          network: { rpcUrl: 'https://example.com', chainId: 1 },
+          accounts: [],
+          tokens: {},
+          contracts: {}
+        }))
+      },
+      existsSync: jest.fn(() => true),
+      readFileSync: jest.fn(() => JSON.stringify({
+        network: { rpcUrl: 'https://example.com', chainId: 1 },
+        accounts: [],
+        tokens: {},
+        contracts: {}
+      }))
+    }));
+    const { loadConfig: newLoadConfig } = await import('../../src/core/config.js');
+    expect(() => newLoadConfig('config.json')).toThrow('accounts 为空');
+    expect(() => newLoadConfig('config.json')).toThrow('config/config.example.json');
+  });
+
+  test('配置文件不存在且example存在时应提示从模板复制', async () => {
+    jest.resetModules();
+    const fsMock = {
+      existsSync: jest.fn((p) => typeof p === 'string' && p.includes('config.example.json')),
+      readFileSync: jest.fn()
+    };
+    jest.unstable_mockModule('fs', () => ({
+      default: fsMock,
+      existsSync: fsMock.existsSync,
+      readFileSync: fsMock.readFileSync
+    }));
+    const { loadConfig: newLoadConfig } = await import('../../src/core/config.js');
+    expect(() => newLoadConfig('config/config.json')).toThrow(/cp .*config\.example\.json/);
+  });
 });

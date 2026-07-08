@@ -10,7 +10,11 @@ function loadConfig(configPath = 'config/config.json') {
   const fullPath = path.resolve(configPath);
 
   if (!fs.existsSync(fullPath)) {
-    throw new Error(`配置文件不存在: ${fullPath}`);
+    const examplePath = path.resolve('config/config.example.json');
+    const hint = fs.existsSync(examplePath)
+      ? `\n提示：从模板复制一份即可：\n  cp ${examplePath} ${fullPath}\n  然后编辑其中的地址和私钥`
+      : '';
+    throw new Error(`配置文件不存在: ${fullPath}${hint}`);
   }
 
   const content = fs.readFileSync(fullPath, 'utf-8');
@@ -38,7 +42,10 @@ function loadConfig(configPath = 'config/config.json') {
 
   // 验证 accounts 数组元素结构
   if (!Array.isArray(config.accounts) || config.accounts.length === 0) {
-    throw new Error(`配置文件缺少必要字段: accounts (必须是非空数组)`);
+    throw new Error(
+      `配置文件 accounts 为空。请在 ${fullPath} 中填入你的账户地址和私钥。\n` +
+      `参考模板: config/config.example.json`
+    );
   }
   for (const account of config.accounts) {
     if (!account.address || typeof account.address !== 'string') {
