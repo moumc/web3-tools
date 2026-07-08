@@ -5,6 +5,10 @@ config/*.local.json
 .env
 .env.*
 
+# 历史改写工具的一次性产物
+replacements.txt
+.git-backup-*/
+
 # 依赖
 node_modules/
 
