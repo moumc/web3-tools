@@ -14,6 +14,7 @@ let mockLogger = createMockLogger();
 
 const createMockRpc = () => ({
   call: jest.fn(),
+  getNativeBalance: jest.fn().mockResolvedValue(BigInt(0)),
   provider: {
     getFeeData: jest.fn().mockResolvedValue({ gasPrice: BigInt(1000000000) }),
     estimateGas: jest.fn().mockResolvedValue(BigInt(50000))
@@ -52,7 +53,17 @@ jest.unstable_mockModule('ethers', () => {
     formatUnits: (value, decimals = 18) => {
       const divisor = BigInt(10) ** BigInt(decimals);
       return (value / divisor).toString();
-    }
+    },
+    zeroPadValue: (value, bytes) => {
+      // 简单模拟：如果是 BigInt，转换为 Buffer
+      if (typeof value === 'bigint') {
+        const hex = value.toString(16).slice(2) || '0';
+        const padded = hex.padStart(bytes * 2, '0');
+        return Buffer.from(padded.padEnd(bytes * 2, '0'), 'hex');
+      }
+      return Buffer.alloc(bytes);
+    },
+    hexlify: (val) => '0x' + val.toString('hex')
   };
 
   return {

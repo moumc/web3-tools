@@ -3,15 +3,15 @@ import { loadConfig } from './core/config.js';
 import { RpcClient } from './core/rpc.js';
 import { queryBalances } from './actions/balance.js';
 import { executeContracts } from './actions/executor.js';
-import { collectTokens } from './actions/collect.js';
+import { collectTokens, collectNativeCoins } from './actions/collect.js';
 
 async function main() {
   const args = process.argv.slice(2);
   const action = args[0];
 
   if (!action) {
-    console.error('请指定操作: balance, execute 或 collect');
-    console.error('用法: node src/index.js <balance|execute|collect>');
+    console.error('请指定操作: balance, execute, collect 或 collect-native');
+    console.error('用法: node src/index.js <balance|execute|collect|collect-native>');
     process.exit(1);
   }
 
@@ -48,9 +48,15 @@ async function main() {
         process.exit(1);
       }
       await collectTokens(config.accounts, config.tokens, config.collector.targetAddress, rpcClient, logger);
+    } else if (action === 'collect-native') {
+      if (!config.collector?.targetAddress) {
+        console.error('配置中缺少 collector.targetAddress');
+        process.exit(1);
+      }
+      await collectNativeCoins(config.accounts, config.network.nativeSymbol, config.collector.targetAddress, rpcClient, logger);
     } else {
       console.error(`未知操作: ${action}`);
-      console.error('可用操作: balance, execute, collect');
+      console.error('可用操作: balance, execute, collect, collect-native');
       process.exit(1);
     }
   } catch (error) {
