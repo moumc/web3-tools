@@ -69,6 +69,30 @@ npm run gen-account
 npm run gen-account -- 5
 ```
 
+输出示例：
+
+```json
+[{
+  "address": "0x9e75c58AD2C47095032D78a0788EBCFB48adBE65",
+  "privateKey": "0xf2183d3879ff37a7000a26c65fc62bf7cdef2acda7c5d6c427f16020868aebec",
+  "meta": {
+    "curve": "secp256k1",
+    "entropySource": "node:crypto.randomBytes",
+    "entropyBits": 256,
+    "verified": true,
+    "verifiedAt": "2026-07-08T12:40:57.659Z"
+  }
+}]
+```
+
+**安全保证（三层防御）**
+
+1. **熵源探测**：模块加载与每次生成前探测 `node:crypto.randomBytes` 或 `WebCrypto.getRandomValues`；任一可用方生成；二者皆缺失直接抛错拒绝生成
+2. **强熵**：32 字节（256 bit）熵，源自 OS 内核 CSPRNG；远超比特币/BIP-39 推荐下限（128 bit）
+3. **签名往返校验**：每个账户生成后立即用私钥对固定消息签名并 `verifyMessage` 恢复地址，与声称地址比对；任一步骤不符即抛错——可捕获 ethers 升级或实现 bug 导致的地址派生错误
+
+`meta.verified === true` 表示本轮已通过上述校验。生产代码（CLI、库调用）都会执行此校验；集成测试 `tests/actions/account.integration.test.js` 用真实 ethers 跑 sign+recover 闭环。
+
 ## 日志
 
 日志输出到 `logs/app.log`，同时打印到控制台。
