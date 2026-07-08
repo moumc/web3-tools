@@ -9,6 +9,7 @@
     "execute": "node src/index.js execute",
     "collect": "node src/index.js collect",
     "collect-native": "node src/index.js collect-native",
+    "gen-account": "node src/index.js gen-account",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js"
   },
   "dependencies": {

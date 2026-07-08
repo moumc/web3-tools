@@ -4,15 +4,29 @@ import { RpcClient } from './core/rpc.js';
 import { queryBalances } from './actions/balance.js';
 import { executeContracts } from './actions/executor.js';
 import { collectTokens, collectNativeCoins } from './actions/collect.js';
+import { generateAccounts } from './actions/account.js';
 
 async function main() {
   const args = process.argv.slice(2);
   const action = args[0];
 
   if (!action) {
-    console.error('请指定操作: balance, execute, collect 或 collect-native');
-    console.error('用法: node src/index.js <balance|execute|collect|collect-native>');
+    console.error('请指定操作: balance, execute, collect, collect-native, gen-account');
+    console.error('用法: node src/index.js <action> [args]');
     process.exit(1);
+  }
+
+  // gen-account 不需要 config / RPC / 日志，直接走
+  if (action === 'gen-account') {
+    const count = Number.parseInt(args[1], 10);
+    try {
+      const accounts = generateAccounts(Number.isNaN(count) ? undefined : count);
+      console.log(JSON.stringify(accounts, null, 2));
+    } catch (error) {
+      console.error(`生成失败: ${error.message}`);
+      process.exit(1);
+    }
+    process.exit(0);
   }
 
   // 加载配置
@@ -56,7 +70,7 @@ async function main() {
       await collectNativeCoins(config.accounts, config.network.nativeSymbol, config.collector.targetAddress, rpcClient, logger);
     } else {
       console.error(`未知操作: ${action}`);
-      console.error('可用操作: balance, execute, collect, collect-native');
+      console.error('可用操作: balance, execute, collect, collect-native, gen-account');
       process.exit(1);
     }
   } catch (error) {

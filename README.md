@@ -56,6 +56,19 @@ npm run collect
 npm run collect-native
 ```
 
+### 生成账户
+
+生成新的以太坊地址与私钥，本地使用 CSPRNG，私钥**不会上传任何远端**。
+输出为 JSON 数组，请妥善保管。
+
+```bash
+# 生成 1 个（默认）
+npm run gen-account
+
+# 生成 N 个
+npm run gen-account -- 5
+```
+
 ## 日志
 
 日志输出到 `logs/app.log`，同时打印到控制台。
