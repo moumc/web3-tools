@@ -430,13 +430,15 @@ async function runBalanceExport({
     logger.info(`[Phase 2] 批次 ${batchNo}/${totalBatches}：SELECT 出 ${batchAddresses.length} 地址 (id ${idRange})`);
 
     // 6.1 构造 RPC calls：每个地址 × (1 原生币 + N 代币)
+    // ⚠️ balanceOf(address) 的参数是**钱包地址**，不是代币合约地址
     const calls = [];
     for (const addr of batchAddresses) {
       calls.push({ id: `native:${addr}`, method: 'eth_getBalance', params: [addr, 'latest'] });
     }
     for (const t of tokenList) {
-      const data = encodeBalanceOfData(t.address);
       for (const addr of batchAddresses) {
+        // 每个钱包地址单独编码 data——不能提到外层共享
+        const data = encodeBalanceOfData(addr);
         calls.push({ id: `token:${t.address}:${addr}`, method: 'eth_call', params: [{ to: t.address, data }, 'latest'] });
       }
     }
