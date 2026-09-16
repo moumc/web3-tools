@@ -28,8 +28,9 @@ function encodeBalanceOfData(address) {
   const selector = ethers.id('balanceOf(address)').slice(0, 10);
   // address 必须 checksum 化
   const checksum = ethers.getAddress(address);
-  // 去掉 0x 再 pad 到 32 字节
-  const padded = '0'.repeat(24) + checksum.slice(2).toLowerCase();
+  // 去掉 0x 再 pad 到 32 字节；**保留 checksum 大小写**，不能 toLowerCase
+  // 生产 RPC 对 calldata 里的地址大小写敏感：全小写会返非零的脏数据
+  const padded = '0'.repeat(24) + checksum.slice(2);
   return selector + padded;
 }
 
@@ -95,9 +96,10 @@ async function singleRpc({ rpcUrl, method, params, timeoutMs = DEFAULT_TIMEOUT_M
 }
 
 /**
- * 顺序执行一组 JSON-RPC 调用（**不并发**）
+ * 并发执行一组 JSON-RPC 调用（每条单独 POST，并发上限默认 10）
  * 行为：
- * - 按 calls 数组顺序逐条执行
+ * - 每条单独 HTTP POST，不发 batch（避免服务端 id 重写等问题）
+ * - 用 worker pool 模式维持固定并发数
  * - 每条单独 try/catch，失败按指数退避重试
  * - 返回值与 calls 等长，按输入顺序对齐：{ id, ok, result?, error? }
  *
@@ -106,9 +108,10 @@ async function singleRpc({ rpcUrl, method, params, timeoutMs = DEFAULT_TIMEOUT_M
  * @param {Array<{id: number|string, method: string, params: any[]}>} args.calls
  * @param {number} [args.timeoutMs=30000]
  * @param {number} [args.retries=3]
+ * @param {number} [args.concurrency=10] - 同时在飞的请求数
  * @param {(attemptIndex: number) => number} [args.backoffMs]
  * @param {typeof fetch} [args.fetchImpl]
- * @param {(call: any, index: number) => void} [args.onProgress] - 每条完成后回调（用于日志）
+ * @param {(call: any, index: number, result: any) => void} [args.onProgress] - 每条完成后回调
  * @returns {Promise<Array<{id, ok, result?, error?}>>}
  */
 async function batchRpcCall({
@@ -116,6 +119,7 @@ async function batchRpcCall({
   calls,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   retries = DEFAULT_RETRIES,
+  concurrency = 10,
   backoffMs = defaultBackoff,
   fetchImpl,
   onProgress
@@ -130,43 +134,53 @@ async function batchRpcCall({
     throw new Error('rpcUrl 必填');
   }
 
-  const out = [];
-  for (let i = 0; i < calls.length; i += 1) {
-    const c = calls[i];
-    let lastError = null;
-    let result = null;
-    let ok = false;
+  const out = new Array(calls.length);
+  let next = 0;
+  let completed = 0;
 
-    const maxAttempts = retries + 1;
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      try {
-        result = await singleRpc({ rpcUrl, method: c.method, params: c.params, timeoutMs, fetchImpl });
-        ok = true;
-        lastError = null;
-        break;
-      } catch (err) {
-        lastError = err;
-        if (attempt < maxAttempts - 1) {
-          await sleep(backoffMs(attempt));
+  async function worker() {
+    while (true) {
+      const i = next;
+      next += 1;
+      if (i >= calls.length) return;
+      const c = calls[i];
+
+      let lastError = null;
+      let result = null;
+      let ok = false;
+
+      const maxAttempts = retries + 1;
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        try {
+          result = await singleRpc({ rpcUrl, method: c.method, params: c.params, timeoutMs, fetchImpl });
+          ok = true;
+          lastError = null;
+          break;
+        } catch (err) {
+          lastError = err;
+          if (attempt < maxAttempts - 1) {
+            await sleep(backoffMs(attempt));
+          }
         }
       }
-    }
 
-    if (ok) {
-      out.push({ id: c.id, ok: true, result });
-    } else {
-      out.push({ id: c.id, ok: false, error: lastError ? lastError.message : 'unknown' });
-    }
+      out[i] = ok
+        ? { id: c.id, ok: true, result }
+        : { id: c.id, ok: false, error: lastError ? lastError.message : 'unknown' };
 
-    if (typeof onProgress === 'function') {
-      try {
-        onProgress(c, i, out[out.length - 1]);
-      } catch (_) {
-        // 回调异常不影响主流程
+      completed += 1;
+      if (typeof onProgress === 'function') {
+        try {
+          onProgress(c, i, out[i]);
+        } catch (_) {
+          // 回调异常不影响主流程
+        }
       }
     }
   }
 
+  const workerCount = Math.min(concurrency, calls.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
   return out;
 }
 

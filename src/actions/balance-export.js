@@ -391,17 +391,14 @@ async function runBalanceExport({
   const INSERT_CHUNK = 1000;
   const mysql = await import('mysql2/promise.js');
   const insertBatches = Math.ceil(addresses.length / INSERT_CHUNK);
-  logger.info(`[Phase 1] 开始导入地址：${addresses.length} 个，分 ${insertBatches} 批（每批 ${INSERT_CHUNK}）`);
+  logger.info(`[Phase 1] 导入 ${addresses.length} 地址 → ${tableName}（${insertBatches} 批）`);
   for (let i = 0; i < addresses.length; i += INSERT_CHUNK) {
-    const batchNo = Math.floor(i / INSERT_CHUNK) + 1;
     const chunk = addresses.slice(i, i + INSERT_CHUNK);
     const insertSql = buildInsertAddressesSql(sid, chunk);
     const formatted = mysql.default.format(insertSql, chunk);
     await pool.query(formatted);
-    const done = Math.min(i + INSERT_CHUNK, addresses.length);
-    logger.info(`[Phase 1] 导入进度 ${batchNo}/${insertBatches}：已写入 ${done}/${addresses.length} 地址`);
   }
-  logger.info(`[Phase 1] 完成：${addresses.length} 个地址已入表 ${tableName}`);
+  logger.info(`[Phase 1] 完成：${addresses.length} 地址已入表`);
 
   // 5. 统计已写入地址数
   const [totalRows] = await pool.execute(
@@ -412,8 +409,9 @@ async function runBalanceExport({
 
   // 6. 游标分批 select + update（无 status，按 id 升序逐批取出全部）
   const totalBatches = Math.ceil(totalCount / batchSize);
-  logger.info(`[Phase 2] 开始查询余额：${totalCount} 地址 × ${tokenList.length} 代币，分 ${totalBatches} 批（每批 ${batchSize} 地址）`);
-  logger.info(`[Phase 2] RPC URL: ${finalRpcUrl}`);
+  // 日志频率：每 10% 或 100 批（取大者）输出一次
+  const logEvery = Math.max(1, Math.floor(Math.max(totalBatches / 10, 100)));
+  logger.info(`[Phase 2] ${totalCount} 地址 × ${tokenList.length} 代币 → ${totalBatches} 批 RPC（${finalRpcUrl}）`);
   let lastId = 0;
   let processed = 0;
   let updatedThisRun = 0;
@@ -426,8 +424,6 @@ async function runBalanceExport({
 
     const batchAddresses = rows.map(r => r.address);
     lastId = Math.max(...rows.map(r => Number(r.id)));
-    const idRange = `${rows[0].id}..${rows[rows.length - 1].id}`;
-    logger.info(`[Phase 2] 批次 ${batchNo}/${totalBatches}：SELECT 出 ${batchAddresses.length} 地址 (id ${idRange})`);
 
     // 6.1 构造 RPC calls：每个地址 × (1 原生币 + N 代币)
     // ⚠️ balanceOf(address) 的参数是**钱包地址**，不是代币合约地址
@@ -437,46 +433,39 @@ async function runBalanceExport({
     }
     for (const t of tokenList) {
       for (const addr of batchAddresses) {
-        // 每个钱包地址单独编码 data——不能提到外层共享
         const data = encodeBalanceOfData(addr);
         calls.push({ id: `token:${t.address}:${addr}`, method: 'eth_call', params: [{ to: t.address, data }, 'latest'] });
       }
     }
-    logger.info(`[Phase 2] 批次 ${batchNo}/${totalBatches}：构造 ${calls.length} 个 RPC 调用（${batchAddresses.length} 地址 × ${1 + tokenList.length} 项）`);
 
-    // 6.2 顺序逐条 RPC（不并发），每条单独重试；每 50 条打一次进度
+    // 6.2 并发 RPC（每条单独 POST，10 路并发 + 每条独立重试）
     const t0 = Date.now();
-    let doneCount = 0;
-    let failCount = 0;
     const results = await rpcBatchCall({
       rpcUrl: finalRpcUrl,
       calls,
       retries: maxRpcRetries,
       timeoutMs: 30000,
+      concurrency: 10,
       onProgress: (call, idx, r) => {
-        doneCount += 1;
-        if ((idx + 1) % 50 === 0 || idx === calls.length - 1) {
-          const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-          const rate = (doneCount / parseFloat(elapsed || '1')).toFixed(1);
-          logger.info(`[Phase 2] 批次 ${batchNo}/${totalBatches}：RPC 进度 ${idx + 1}/${calls.length}（${elapsed}s，${rate} 条/s）`);
+        // 不再 per-50 输出，只在批次结束一次性输出汇总
+        if (idx === calls.length - 1 && r && !r.ok) {
+          logger.warn(`[Phase 2] 批次 ${batchNo} 单条失败：${call.id} → ${r.error}`);
         }
       }
     });
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-    failCount = results.filter(r => r && !r.ok).length;
-    const okCount = results.length - failCount;
-    logger.info(`[Phase 2] 批次 ${batchNo}/${totalBatches}：RPC 完成 ${elapsed}s，成功 ${okCount} 失败 ${failCount}`);
+    const okCount = results.filter(r => r && r.ok).length;
+    const failCount = results.length - okCount;
+    const rate = (calls.length / parseFloat(elapsed || '1')).toFixed(1);
 
     // 6.3 切分 results：前 batchAddresses.length 是 native，剩下是 token
     const nativeResults = results.slice(0, batchAddresses.length);
     const tokenResults = results.slice(batchAddresses.length);
     const tokenByAddr = indexTokenResultsByAddress(tokenResults, batchAddresses, tokenList);
 
-    // 6.4 构造 UPDATE 行：原生币 ok → 转十进制 ETH 单位；否则 '0'（与列默认 0 一致）
+    // 6.4 构造 UPDATE 行
     const updateRows = batchAddresses.map((addr, i) => {
       const nativeR = nativeResults[i];
-      // RPC 返回的是 hex wei；DECIMAL 列需要十进制字符串。18 位精度（EVM 原生币标准）
-      // 失败也写 '0'，让所有余额列保持数值（不出现 NULL）
       const nativeBalance = nativeR && nativeR.ok ? formatBalance(nativeR.result, 18) : '0';
       const balances = tokenByAddr.get(addr) || {};
       return { address: addr, nativeBalance, balances };
@@ -488,8 +477,10 @@ async function runBalanceExport({
     updatedThisRun += updateRows.length;
 
     processed += batchAddresses.length;
-    const pct = ((processed / totalCount) * 100).toFixed(1);
-    logger.info(`[Phase 2] 进度 ${pct}%：${processed}/${totalCount}（已更新 ${updatedThisRun}）`);
+    if (batchNo % logEvery === 0 || processed === totalCount) {
+      const pct = ((processed / totalCount) * 100).toFixed(1);
+      logger.info(`[Phase 2] 进度 ${pct}%：${processed}/${totalCount}（最新批次 ${batchNo}/${totalBatches}：${elapsed}s ${calls.length}条 ${rate}条/s 失败${failCount}）`);
+    }
   }
 
   logger.info(`=== 完成 === 表: ${tableName} 共更新 ${updatedThisRun} 行`);
