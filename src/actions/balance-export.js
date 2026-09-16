@@ -101,11 +101,11 @@ function extractAddressesFromSheet(filePath) {
  */
 function buildHeader(nativeSymbol, tokens) {
   const header = ['地址', `原生币(${nativeSymbol})`];
-  for (const [, info] of Object.entries(tokens || {})) {
-    const name = info.name || 'TOKEN';
+  for (const info of (Array.isArray(tokens) ? tokens : [])) {
+    const symbol = info.symbol || 'TOKEN';
     // 取 '0x' + 后续 4 位十六进制字符
     const prefix = info.address.slice(0, 6);
-    header.push(`${name}(${prefix})`);
+    header.push(`${symbol}(${prefix})`);
   }
   return header;
 }
@@ -123,7 +123,7 @@ async function readTokenBalanceCell(rpcClient, address, tokenInfo) {
     const decimals = tokenInfo.decimals ?? 18;
     return ethers.formatUnits(raw, decimals);
   } catch (error) {
-    return { ok: false, error: error.message, tokenName: tokenInfo.name || 'TOKEN' };
+    return { ok: false, error: error.message, tokenName: tokenInfo.symbol || 'TOKEN' };
   }
 }
 
@@ -186,9 +186,9 @@ async function runBalanceExport({ config, inputPath, outputPath, rpcClient, logg
   }
 
   const header = buildHeader(nativeSymbol, tokens);
-  const tokenEntries = Object.entries(tokens);
+  const tokenList = Array.isArray(tokens) ? tokens : [];
 
-  logger.info(`开始查询余额: ${addresses.length} 个地址 × (1 原生币 + ${tokenEntries.length} 个 ERC20) = ${addresses.length * (1 + tokenEntries.length)} 次调用`);
+  logger.info(`开始查询余额: ${addresses.length} 个地址 × (1 原生币 + ${tokenList.length} 个 ERC20) = ${addresses.length * (1 + tokenList.length)} 次调用`);
 
   /** @type {Array<Array<string>>} */
   const dataRows = [];
@@ -204,7 +204,7 @@ async function runBalanceExport({ config, inputPath, outputPath, rpcClient, logg
       row.push(PLACEHOLDER);
     }
 
-    for (const [, info] of tokenEntries) {
+    for (const info of tokenList) {
       const cell = await readTokenBalanceCell(rpcClient, address, info);
       if (typeof cell === 'string') {
         row.push(cell);
@@ -232,7 +232,7 @@ async function runBalanceExport({ config, inputPath, outputPath, rpcClient, logg
   return {
     outputPath: finalOutputPath,
     addressCount: dataRows.length,
-    tokenCount: tokenEntries.length
+    tokenCount: tokenList.length
   };
 }
 

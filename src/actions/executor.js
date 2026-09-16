@@ -25,28 +25,28 @@ const DEFAULT_GAS_LIMIT = BigInt(300000);
 async function compareBalances(address, tokens, balanceBefore, rpcClient, logger) {
   const balanceChanges = {};
 
-  for (const [tokenName, tokenInfo] of Object.entries(tokens)) {
+  for (const [tokenIndex, tokenInfo] of (Array.isArray(tokens) ? tokens : []).entries()) {
+    const tokenKey = tokenInfo.symbol || `token-${tokenIndex}`;
     try {
       const balanceAfter = await queryTokenBalance(rpcClient, address, tokenInfo.address);
-      const tokenNameDisplay = tokenInfo.name || tokenName;
       const decimals = tokenInfo.decimals || 18;
       const formattedBalance = ethers.formatUnits(balanceAfter, decimals);
-      logger.info(`[${address}] ${tokenNameDisplay} 执行后余额: ${formattedBalance}`);
+      logger.info(`[${address}] ${tokenKey} 执行后余额: ${formattedBalance}`);
 
-      balanceChanges[tokenName] = {
-        before: balanceBefore[tokenName],
+      balanceChanges[tokenKey] = {
+        before: balanceBefore[tokenKey],
         after: balanceAfter
       };
 
-      if (balanceBefore[tokenName] === balanceAfter) {
-        logger.warn(`[${address}] ${tokenNameDisplay} 余额未变化，请确认交易是否执行成功`);
+      if (balanceBefore[tokenKey] === balanceAfter) {
+        logger.warn(`[${address}] ${tokenKey} 余额未变化，请确认交易是否执行成功`);
       } else {
-        logger.info(`[${address}] ${tokenNameDisplay} 余额已变化，执行成功`);
+        logger.info(`[${address}] ${tokenKey} 余额已变化，执行成功`);
       }
     } catch (balanceError) {
-      logger.error(`[${address}] 获取 ${tokenName} 执行后余额失败: ${balanceError.message}`);
-      balanceChanges[tokenName] = {
-        before: balanceBefore[tokenName],
+      logger.error(`[${address}] 获取 ${tokenKey} 执行后余额失败: ${balanceError.message}`);
+      balanceChanges[tokenKey] = {
+        before: balanceBefore[tokenKey],
         after: null
       };
     }
@@ -132,16 +132,16 @@ async function executeAccountContracts(account, tokens, contracts, rpcClient, lo
 
   // 获取执行前余额
   const balanceBefore = {};
-  for (const [tokenName, tokenInfo] of Object.entries(tokens)) {
+  for (const [tokenIndex, tokenInfo] of (Array.isArray(tokens) ? tokens : []).entries()) {
+    const tokenKey = tokenInfo.symbol || `token-${tokenIndex}`;
     try {
-      balanceBefore[tokenName] = await queryTokenBalance(rpcClient, address, tokenInfo.address);
-      const tokenNameDisplay = tokenInfo.name || tokenName;
+      balanceBefore[tokenKey] = await queryTokenBalance(rpcClient, address, tokenInfo.address);
       const decimals = tokenInfo.decimals || 18;
-      const formattedBalance = ethers.formatUnits(balanceBefore[tokenName], decimals);
-      logger.info(`[${address}] ${tokenNameDisplay} 执行前余额: ${formattedBalance}`);
+      const formattedBalance = ethers.formatUnits(balanceBefore[tokenKey], decimals);
+      logger.info(`[${address}] ${tokenKey} 执行前余额: ${formattedBalance}`);
     } catch (balanceError) {
-      logger.error(`[${address}] 获取 ${tokenName} 执行前余额失败: ${balanceError.message}`);
-      balanceBefore[tokenName] = BigInt(0);
+      logger.error(`[${address}] 获取 ${tokenKey} 执行前余额失败: ${balanceError.message}`);
+      balanceBefore[tokenKey] = BigInt(0);
     }
   }
 

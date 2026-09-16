@@ -25,11 +25,11 @@ async function queryBalances(accounts, tokens, nativeSymbol, rpcClient, logger) 
       logger.info(`[${address}] 原生币余额: ${nativeInEth} ${symbol}`);
 
       // 查询每个代币的余额
-      for (const [tokenName, tokenInfo] of Object.entries(tokens)) {
+      for (const tokenInfo of (Array.isArray(tokens) ? tokens : [])) {
         const tokenBalance = await queryTokenBalance(rpcClient, address, tokenInfo.address);
         const decimals = tokenInfo.decimals || 18;
         const formattedBalance = ethers.formatUnits(tokenBalance, decimals);
-        logger.info(`[${address}] ${tokenInfo.name} (${tokenName}) 余额: ${formattedBalance}`);
+        logger.info(`[${address}] ${tokenInfo.symbol} 余额: ${formattedBalance}`);
       }
     } catch (error) {
       logger.error(`[${address}] 查询余额失败: ${error.message}`);

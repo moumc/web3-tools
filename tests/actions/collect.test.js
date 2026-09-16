@@ -86,7 +86,7 @@ describe('collectTokens', () => {
     mockRpc.call.mockResolvedValue('0x0000000000000000000000000000000000000000000000000000000000000000');
 
     const accounts = [{ address: TEST_ADDRESS, privateKey: '0xabc123' }];
-    const tokens = { targetToken: { address: TOKEN_ADDRESS, decimals: 18, name: 'Test Token' } };
+    const tokens = [{ address: TOKEN_ADDRESS, decimals: 18, symbol: 'Test Token' }];
 
     const results = await collectTokens(accounts, tokens, TARGET_ADDRESS, mockRpc, mockLogger);
 
@@ -101,7 +101,7 @@ describe('collectTokens', () => {
     mockRpc.provider.estimateGas.mockRejectedValue(new Error('execution reverted'));
 
     const accounts = [{ address: TEST_ADDRESS, privateKey: '0xabc123' }];
-    const tokens = { targetToken: { address: TOKEN_ADDRESS, decimals: 18, name: 'Test Token' } };
+    const tokens = [{ address: TOKEN_ADDRESS, decimals: 18, symbol: 'Test Token' }];
 
     const results = await collectTokens(accounts, tokens, TARGET_ADDRESS, mockRpc, mockLogger);
 
@@ -123,7 +123,7 @@ describe('collectTokens', () => {
       { address: TEST_ADDRESS, privateKey: '0xabc123' },
       { address: TEST_ADDRESS_2, privateKey: '0xdef456' }
     ];
-    const tokens = { targetToken: { address: TOKEN_ADDRESS, decimals: 18, name: 'Test Token' } };
+    const tokens = [{ address: TOKEN_ADDRESS, decimals: 18, symbol: 'Test Token' }];
 
     const results = await collectTokens(accounts, tokens, TARGET_ADDRESS, mockRpc, mockLogger);
 

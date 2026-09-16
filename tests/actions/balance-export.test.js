@@ -173,10 +173,10 @@ describe('runBalanceExport - 完整导出流程', () => {
     config = {
       network: { rpcUrl: 'http://localhost:8545', chainId: 1, nativeSymbol: 'ETH' },
       accounts: [],
-      tokens: {
-        usdt: { address: USDT_ADDRESS, name: 'USDT', decimals: 6 },
-        aia:  { address: AIA_ADDRESS,  name: 'AIA',  decimals: 18 }
-      },
+      tokens: [
+        { address: USDT_ADDRESS, symbol: 'USDT', decimals: 6 },
+        { address: AIA_ADDRESS,  symbol: 'AIA',  decimals: 18 }
+      ],
       contracts: {}
     };
   });

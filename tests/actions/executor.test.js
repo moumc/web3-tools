@@ -96,7 +96,7 @@ describe('executeContracts', () => {
       .mockResolvedValueOnce('0x0000000000000000000000000000000000000000000000000000000000000000');
 
     const accounts = [{ address: TEST_ADDRESS, privateKey: '0xabc123' }];
-    const tokens = { targetToken: { address: TOKEN_ADDRESS, decimals: 18, name: 'Test Token' } };
+    const tokens = [{ address: TOKEN_ADDRESS, decimals: 18, symbol: 'Test Token' }];
     const contracts = { targetContract: { address: CONTRACT_ADDRESS, input: '0x123456' } };
 
     const results = await executeContracts(accounts, tokens, contracts, mockRpc, mockLogger);
@@ -111,7 +111,7 @@ describe('executeContracts', () => {
     mockRpc.call.mockResolvedValue('0x0000000000000000000000000000000000000000000000000000000000000001');
 
     const accounts = [{ address: TEST_ADDRESS, privateKey: '0xabc123' }];
-    const tokens = { targetToken: { address: TOKEN_ADDRESS, decimals: 18, name: 'Test Token' } };
+    const tokens = [{ address: TOKEN_ADDRESS, decimals: 18, symbol: 'Test Token' }];
     const contracts = { targetContract: { address: CONTRACT_ADDRESS, input: '0x123456' } };
 
     await executeContracts(accounts, tokens, contracts, mockRpc, mockLogger);
@@ -128,7 +128,7 @@ describe('executeContracts', () => {
       .mockResolvedValueOnce('0x0000000000000000000000000000000000000000000000000000000000000001');
 
     const accounts = [{ address: TEST_ADDRESS, privateKey: '0xabc123' }];
-    const tokens = { targetToken: { address: TOKEN_ADDRESS, decimals: 18, name: 'Test Token' } };
+    const tokens = [{ address: TOKEN_ADDRESS, decimals: 18, symbol: 'Test Token' }];
     const contracts = { targetContract: { address: CONTRACT_ADDRESS, input: '0x123456' } };
 
     const results = await executeContracts(accounts, tokens, contracts, mockRpc, mockLogger);
@@ -144,7 +144,7 @@ describe('executeContracts', () => {
       { address: TEST_ADDRESS, privateKey: '0xabc123' },
       { address: TEST_ADDRESS_2, privateKey: '0xdef456' }
     ];
-    const tokens = { targetToken: { address: TOKEN_ADDRESS, decimals: 18, name: 'Test Token' } };
+    const tokens = [{ address: TOKEN_ADDRESS, decimals: 18, symbol: 'Test Token' }];
     const contracts = { targetContract: { address: CONTRACT_ADDRESS, input: '0x123456' } };
 
     const results = await executeContracts(accounts, tokens, contracts, mockRpc, mockLogger);
@@ -164,7 +164,7 @@ describe('executeContracts', () => {
       .mockResolvedValueOnce('0x0000000000000000000000000000000000000000000000000000000000000000');
 
     const accounts = [{ address: TEST_ADDRESS, privateKey: '0xabc123' }];
-    const tokens = { targetToken: { address: TOKEN_ADDRESS, decimals: 18, name: 'Test Token' } };
+    const tokens = [{ address: TOKEN_ADDRESS, decimals: 18, symbol: 'Test Token' }];
     const contracts = {
       contract1: { address: CONTRACT_ADDRESS, input: '0x123456' },
       contract2: { address: CONTRACT_ADDRESS_2, input: '0xabcdef' }
@@ -184,7 +184,7 @@ describe('executeContracts', () => {
       .mockResolvedValueOnce('0x0000000000000000000000000000000000000000000000000000000000000000');
 
     const accounts = [{ address: TEST_ADDRESS, privateKey: '0xabc123' }];
-    const tokens = { targetToken: { address: TOKEN_ADDRESS, decimals: 18, name: 'Test Token' } };
+    const tokens = [{ address: TOKEN_ADDRESS, decimals: 18, symbol: 'Test Token' }];
     const contracts = { targetContract: { address: CONTRACT_ADDRESS, input: '0x123456' } };
 
     const results = await executeContracts(accounts, tokens, contracts, mockRpc, mockLogger);
@@ -205,7 +205,7 @@ describe('executeContracts', () => {
       .mockResolvedValueOnce('0x0000000000000000000000000000000000000000000000000000000000000000');
 
     const accounts = [{ address: TEST_ADDRESS, privateKey: '0xabc123' }];
-    const tokens = { targetToken: { address: TOKEN_ADDRESS, decimals: 18, name: 'Test Token' } };
+    const tokens = [{ address: TOKEN_ADDRESS, decimals: 18, symbol: 'Test Token' }];
     const contracts = { targetContract: { address: CONTRACT_ADDRESS, input: '0x123456' } };
 
     const results = await executeContracts(accounts, tokens, contracts, mockRpc, mockLogger);
@@ -214,8 +214,8 @@ describe('executeContracts', () => {
     expect(results[0].success).toBe(true);
     expect(results[0].address).toBe(TEST_ADDRESS);
     expect(results[0].transactions.length).toBeGreaterThan(0);
-    expect(results[0].balanceChanges.targetToken).toBeDefined();
-    expect(results[0].balanceChanges.targetToken.before).toBeDefined();
-    expect(results[0].balanceChanges.targetToken.after).toBeDefined();
+    expect(results[0].balanceChanges['Test Token']).toBeDefined();
+    expect(results[0].balanceChanges['Test Token'].before).toBeDefined();
+    expect(results[0].balanceChanges['Test Token'].after).toBeDefined();
   });
 });

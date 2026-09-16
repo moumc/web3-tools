@@ -46,7 +46,7 @@ copy config\config.example.json config\config.json
 | `accounts[]` | ✅ | 账户列表，元素 `{ address, privateKey }` |
 | `accounts[].address` | ✅ | 账户地址（任意大小写，运行时统一 checksum） |
 | `accounts[].privateKey` | ✅ | 账户私钥（`0x` 前缀 64 位十六进制） |
-| `tokens` | ✅ | ERC20 代币映射 `{ name: { address, name, decimals } }` |
+| `tokens[]` | ✅ | ERC20 代币列表，每个元素 `{ symbol, address, decimals }` |
 | `contracts` | ✅ | 合约调用映射 `{ name: { address, input } }`（`input` 为已编码 calldata） |
 | `collector.targetAddress` | collect 时必填 | 归集目标地址 |
 | `distributor.senderAddress` | 可选 | 分发时的发送地址（须存在于 `accounts`，未配置时取 `accounts[0]`） |
