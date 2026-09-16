@@ -299,11 +299,8 @@ function indexTokenResultsByAddress(tokenResults, addressesInOrder, tokens) {
       const r = tokenResults[idx];
       idx += 1;
       const bag = out.get(addr);
-      if (r && r.ok) {
-        bag[col] = formatBalance(r.result, t.decimals);
-      } else {
-        bag[col] = null;
-      }
+      // RPC 成功 → 格式化后的十进制字符串；失败 → '0'（与列默认 0 一致）
+      bag[col] = r && r.ok ? formatBalance(r.result, t.decimals) : '0';
     }
   }
   return out;
@@ -473,11 +470,12 @@ async function runBalanceExport({
     const tokenResults = results.slice(batchAddresses.length);
     const tokenByAddr = indexTokenResultsByAddress(tokenResults, batchAddresses, tokenList);
 
-    // 6.4 构造 UPDATE 行：原生币 ok → 转十进制 ETH 单位；否则 NULL
+    // 6.4 构造 UPDATE 行：原生币 ok → 转十进制 ETH 单位；否则 '0'（与列默认 0 一致）
     const updateRows = batchAddresses.map((addr, i) => {
       const nativeR = nativeResults[i];
       // RPC 返回的是 hex wei；DECIMAL 列需要十进制字符串。18 位精度（EVM 原生币标准）
-      const nativeBalance = nativeR && nativeR.ok ? formatBalance(nativeR.result, 18) : null;
+      // 失败也写 '0'，让所有余额列保持数值（不出现 NULL）
+      const nativeBalance = nativeR && nativeR.ok ? formatBalance(nativeR.result, 18) : '0';
       const balances = tokenByAddr.get(addr) || {};
       return { address: addr, nativeBalance, balances };
     });

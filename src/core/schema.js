@@ -126,13 +126,13 @@ function buildCreateTableSql(sessionId, tokens) {
     if (decimals < 0 || decimals > 30) {
       throw new Error(`decimals 越界: ${t.symbol} = ${decimals}`);
     }
-    return `  \`${col}\` DECIMAL(38,${decimals}) DEFAULT NULL`;
+    return `  \`${col}\` DECIMAL(38,${decimals}) NOT NULL DEFAULT 0`;
   });
 
   const columns = [
     '  `id` BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT',
     "  `address` VARCHAR(42) NOT NULL",
-    '  `native_balance` DECIMAL(38,18) DEFAULT NULL',
+    '  `native_balance` DECIMAL(38,18) NOT NULL DEFAULT 0',
     ...tokenColumns,
     '  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP',
     '  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP',
