@@ -393,13 +393,18 @@ async function runBalanceExport({
   // 用 pool.query 走客户端转义，避免 server-side PREPARE 对占位符数量的限制
   const INSERT_CHUNK = 1000;
   const mysql = await import('mysql2/promise.js');
+  const insertBatches = Math.ceil(addresses.length / INSERT_CHUNK);
+  logger.info(`[Phase 1] 开始导入地址：${addresses.length} 个，分 ${insertBatches} 批（每批 ${INSERT_CHUNK}）`);
   for (let i = 0; i < addresses.length; i += INSERT_CHUNK) {
+    const batchNo = Math.floor(i / INSERT_CHUNK) + 1;
     const chunk = addresses.slice(i, i + INSERT_CHUNK);
     const insertSql = buildInsertAddressesSql(sid, chunk);
     const formatted = mysql.default.format(insertSql, chunk);
     await pool.query(formatted);
+    const done = Math.min(i + INSERT_CHUNK, addresses.length);
+    logger.info(`[Phase 1] 导入进度 ${batchNo}/${insertBatches}：已写入 ${done}/${addresses.length} 地址`);
   }
-  logger.info(`已写入 ${addresses.length} 个地址到表 ${tableName}（按 ${INSERT_CHUNK}/批）`);
+  logger.info(`[Phase 1] 完成：${addresses.length} 个地址已入表 ${tableName}`);
 
   // 5. 统计已写入地址数
   const [totalRows] = await pool.execute(
@@ -409,18 +414,23 @@ async function runBalanceExport({
   logger.info(`开始查询: 总 ${totalCount} 地址`);
 
   // 6. 游标分批 select + update（无 status，按 id 升序逐批取出全部）
-  const progressInterval = calcProgressInterval(totalCount);
+  const totalBatches = Math.ceil(totalCount / batchSize);
+  logger.info(`[Phase 2] 开始查询余额：${totalCount} 地址 × ${tokenList.length} 代币，分 ${totalBatches} 批（每批 ${batchSize} 地址）`);
+  logger.info(`[Phase 2] RPC URL: ${finalRpcUrl}`);
   let lastId = 0;
   let processed = 0;
   let updatedThisRun = 0;
-
+  let batchNo = 0;
   while (true) {
     const selectSql = buildSelectBatchSql(sid, lastId, batchSize);
     const [rows] = await pool.execute(selectSql, [lastId, batchSize]);
     if (rows.length === 0) break;
+    batchNo += 1;
 
     const batchAddresses = rows.map(r => r.address);
     lastId = Math.max(...rows.map(r => Number(r.id)));
+    const idRange = `${rows[0].id}..${rows[rows.length - 1].id}`;
+    logger.info(`[Phase 2] 批次 ${batchNo}/${totalBatches}：SELECT 出 ${batchAddresses.length} 地址 (id ${idRange})`);
 
     // 6.1 构造 RPC calls：每个地址 × (1 原生币 + N 代币)
     const calls = [];
@@ -433,8 +443,10 @@ async function runBalanceExport({
         calls.push({ id: `token:${t.address}:${addr}`, method: 'eth_call', params: [{ to: t.address, data }, 'latest'] });
       }
     }
+    logger.info(`[Phase 2] 批次 ${batchNo}/${totalBatches}：构造 ${calls.length} 个 RPC 调用（${batchAddresses.length} 地址 × ${1 + tokenList.length} 项）`);
 
     // 6.2 调批量 RPC
+    const t0 = Date.now();
     let results;
     try {
       results = await rpcBatchCall({
@@ -443,10 +455,16 @@ async function runBalanceExport({
         retries: maxRpcRetries,
         timeoutMs: 30000
       });
+      const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+      const okCount = results.filter(r => r && r.ok).length;
+      const failCount = results.length - okCount;
+      logger.info(`[Phase 2] 批次 ${batchNo}/${totalBatches}：RPC 完成 ${elapsed}s，成功 ${okCount} 失败 ${failCount}`);
     } catch (err) {
-      // 整批 HTTP 失败：该批列保持 NULL（下一轮重试时此批地址自然会被重新取出）
-      logger.error(`整批 RPC 失败 (${batchAddresses.length} 地址): ${err.message}`);
+      const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+      logger.error(`[Phase 2] 批次 ${batchNo}/${totalBatches}：整批 RPC 失败 ${elapsed}s（${batchAddresses.length} 地址）: ${err.message}`);
       processed += batchAddresses.length;
+      const pct = ((processed / totalCount) * 100).toFixed(1);
+      logger.info(`[Phase 2] 进度 ${pct}%：${processed}/${totalCount}（失败列保持 NULL，下次重跑自动重查）`);
       continue;
     }
 
@@ -470,9 +488,8 @@ async function runBalanceExport({
     updatedThisRun += updateRows.length;
 
     processed += batchAddresses.length;
-    if (processed % progressInterval === 0 || processed === totalCount) {
-      logger.info(`进度: ${processed}/${totalCount}`);
-    }
+    const pct = ((processed / totalCount) * 100).toFixed(1);
+    logger.info(`[Phase 2] 进度 ${pct}%：${processed}/${totalCount}（已更新 ${updatedThisRun}）`);
   }
 
   logger.info(`=== 完成 === 表: ${tableName} 共更新 ${updatedThisRun} 行`);
