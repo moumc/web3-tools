@@ -206,7 +206,7 @@ async function collectTokens(accounts, tokens, targetAddress, rpcClient, logger)
   const results = [];
 
   for (const account of accounts) {
-    for (const tokenInfo of (Array.isArray(tokens) ? tokens : [])) {
+    for (const [tokenName, tokenInfo] of Object.entries(tokens)) {
       const result = await collectToken(account, tokenInfo, targetAddress, rpcClient, logger);
       results.push(result);
     }

@@ -10,13 +10,13 @@
       "privateKey": "0x0000000000000000000000000000000000000000000000000000000000000000"
     }
   ],
-  "tokens": [
-    {
-      "symbol": "USDT",
+  "tokens": {
+    "targetToken": {
       "address": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+      "name": "USDT",
       "decimals": 6
     }
-  ],
+  },
   "contracts": {
     "targetContract1": {
       "address": "0xdAC17F958D2ee523a2206206994597C13D831ec7",

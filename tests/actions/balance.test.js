@@ -43,7 +43,7 @@ describe('queryBalances', () => {
       jest.fn().mockResolvedValue('0x0000000000000000000000000000000000000000000000000000000000000001')
     );
     const accounts = [{ address: TEST_ADDRESS_1 }];
-    const tokens = [{ address: TEST_ADDRESS_2, decimals: 18, symbol: 'Test Token' }];
+    const tokens = { targetToken: { address: TEST_ADDRESS_2, decimals: 18, name: 'Test Token' } };
 
     await queryBalances(accounts, tokens, 'ETH', mockRpc, mockLogger);
 
@@ -58,7 +58,7 @@ describe('queryBalances', () => {
     );
     const accounts = [{ address: TEST_ADDRESS_1 }];
     // 不提供 decimals，触发 || 18 的分支
-    const tokens = [{ address: TEST_ADDRESS_2, symbol: 'Test Token' }];
+    const tokens = { targetToken: { address: TEST_ADDRESS_2, name: 'Test Token' } };
 
     await queryBalances(accounts, tokens, 'ETH', mockRpc, mockLogger);
 
@@ -76,7 +76,7 @@ describe('queryBalances', () => {
       { address: TEST_ADDRESS_3 },
       { address: TEST_ADDRESS_4 }
     ];
-    const tokens = [{ address: TEST_ADDRESS_2, decimals: 18, symbol: 'Test Token' }];
+    const tokens = { targetToken: { address: TEST_ADDRESS_2, decimals: 18, name: 'Test Token' } };
 
     await queryBalances(accounts, tokens, 'ETH', mockRpc, mockLogger);
 
@@ -96,7 +96,7 @@ describe('queryBalances', () => {
       { address: TEST_ADDRESS_6 },
       { address: TEST_ADDRESS_7 }
     ];
-    const tokens = [{ address: TEST_ADDRESS_2, decimals: 18, symbol: 'Test Token' }];
+    const tokens = { targetToken: { address: TEST_ADDRESS_2, decimals: 18, name: 'Test Token' } };
 
     await queryBalances(accounts, tokens, 'ETH', mockRpc, mockLogger);
 
