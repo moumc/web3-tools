@@ -4,7 +4,7 @@
  * 设计要点：
  * - 所有 SQL 标识符（sessionId、列名、表名）必须经过 isValidIdentifier 校验，杜绝拼接注入。
  * - 所有动态值（地址、金额、错误信息）走 ? 占位符，由 mysql2 prepared statement 处理。
- * - 列名格式：<symbol 小写 + 仅保留 [a-z0-9_]前缀 + 不为关键字>_balance。
+ * - 列名格式：<symbol 小写 + 仅 [a-z0-9_]>_<地址前 4 位 hex 小写>_balance。
  */
 
 // SQL 关键字（不全，按风险最高的子集；MySQL 关键字总数 800+，但 DDL/DML 注入攻击面就这些）
@@ -77,9 +77,8 @@ function tableNameFor(sessionId) {
  * - symbol 转小写，仅保留 [a-z0-9_]
  * - address 取 0x 后前 4 位 hex（避免 symbol 重复时撞列名）
  * - 格式：`<symbol>_<addr4hex>_balance`
- * - 再次校验标识符安全 + 长度
  * @param {{symbol: string, address: string, decimals: number}} token
- * @returns {string} 列名（如 `usdt_dac1_balance`）
+ * @returns {string}
  */
 function getTokenColumnName(token) {
   if (!token || typeof token.symbol !== 'string') {
@@ -109,6 +108,8 @@ function getTokenColumnName(token) {
 
 /**
  * 构造 CREATE TABLE IF NOT EXISTS SQL
+ * 列：id / address / native_balance / 每个代币一列 / created_at / updated_at
+ * 不再有 status / error_msg（任务定位简化为「数据已落库」，不再追踪进度）
  * @param {string} sessionId
  * @param {Array<{symbol: string, address: string, decimals: number}>} tokens
  * @returns {string}
@@ -131,14 +132,12 @@ function buildCreateTableSql(sessionId, tokens) {
   const columns = [
     '  `id` BIGINT UNSIGNED PRIMARY KEY AUTO_INCREMENT',
     "  `address` VARCHAR(42) NOT NULL",
-    "  `status` ENUM('pending','done','failed') NOT NULL DEFAULT 'pending'",
     '  `native_balance` DECIMAL(38,18) DEFAULT NULL',
     ...tokenColumns,
-    '  `error_msg` VARCHAR(255) DEFAULT NULL',
     '  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP',
     '  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP',
     '  UNIQUE KEY `uk_address` (`address`)',
-    '  KEY `idx_status` (`status`)'
+    '  KEY `idx_id` (`id`)'
   ];
 
   return [
@@ -149,7 +148,11 @@ function buildCreateTableSql(sessionId, tokens) {
 }
 
 /**
- * 构造 INSERT IGNORE 批量插入地址 SQL
+ * 构造 INSERT IGNORE 多行插入地址 SQL
+ * 格式：`VALUES (?), (?), (?), ...`
+ * MySQL 9.x 要求：
+ *   1. VALUES 列表带括号
+ *   2. 多行插入必须每行单独一对括号（逗号分隔）
  * @param {string} sessionId
  * @param {string[]} addresses
  * @returns {string}
@@ -159,18 +162,18 @@ function buildInsertAddressesSql(sessionId, addresses) {
     throw new Error('addresses 不能为空');
   }
   const tableName = tableNameFor(sessionId);
-  const placeholders = addresses.map(() => '?').join(', ');
-  return `INSERT IGNORE INTO \`${tableName}\` (\`address\`) VALUES ${placeholders};`;
+  const rows = addresses.map(() => '(?)').join(', ');
+  return `INSERT IGNORE INTO \`${tableName}\` (\`address\`) VALUES ${rows};`;
 }
 
 /**
- * 构造游标分页 SELECT pending 地址 SQL
+ * 构造游标分页 SELECT id, address SQL（按 id 升序逐批取出）
  * @param {string} sessionId
  * @param {number} lastId - 上次最后 id，首页传 0
  * @param {number} limit
  * @returns {string}
  */
-function buildSelectPendingSql(sessionId, lastId, limit) {
+function buildSelectBatchSql(sessionId, lastId, limit) {
   const tableName = tableNameFor(sessionId);
   if (!Number.isInteger(lastId) || lastId < 0) {
     throw new Error('lastId 必须为非负整数');
@@ -179,8 +182,8 @@ function buildSelectPendingSql(sessionId, lastId, limit) {
     throw new Error('limit 必须在 1..10000');
   }
   return [
-    `SELECT \`address\` FROM \`${tableName}\``,
-    `WHERE \`status\` = 'pending' AND \`id\` > ?`,
+    `SELECT \`id\`, \`address\` FROM \`${tableName}\``,
+    `WHERE \`id\` > ?`,
     `ORDER BY \`id\``,
     `LIMIT ?;`
   ].join('\n');
@@ -188,31 +191,24 @@ function buildSelectPendingSql(sessionId, lastId, limit) {
 
 /**
  * 构造批量 UPDATE balance SQL（单条 SQL，多个 CASE WHEN）
+ * 不写 status / error_msg；失败的列保持 NULL（下次跑会再查询）
  * @param {string} sessionId
  * @param {Array<{symbol: string, decimals: number}>} tokens
  * @param {Array<{address: string, nativeBalance: string|null, balances: Object<string,string|null>}>} rows
- * @param {{status?: 'done'|'failed', errorMsg?: string}} [opts]
  * @returns {string}
  */
-function buildUpdateBalancesSql(sessionId, tokens, rows, opts = {}) {
+function buildUpdateBalancesSql(sessionId, tokens, rows) {
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new Error('rows 不能为空');
   }
   const tableName = tableNameFor(sessionId);
-  const status = opts.status || 'done';
 
-  // 每个 balance 列一个 CASE WHEN
   const setClauses = [];
-  setClauses.push(`  \`status\` = '${status}'`);
-
-  if (opts.errorMsg !== undefined) {
-    setClauses.push('  `error_msg` = ?');
-  }
 
   // native_balance
   setClauses.push('  `native_balance` = CASE `address`');
   for (const r of rows) {
-    setClauses.push(`    WHEN ? THEN ?`);
+    setClauses.push('    WHEN ? THEN ?');
   }
   setClauses.push('  END');
 
@@ -221,7 +217,7 @@ function buildUpdateBalancesSql(sessionId, tokens, rows, opts = {}) {
     const col = getTokenColumnName(t);
     setClauses.push(`  \`${col}\` = CASE \`address\``);
     for (const r of rows) {
-      setClauses.push(`    WHEN ? THEN ?`);
+      setClauses.push('    WHEN ? THEN ?');
     }
     setClauses.push('  END');
   }
@@ -238,22 +234,16 @@ function buildUpdateBalancesSql(sessionId, tokens, rows, opts = {}) {
 /**
  * 计算 UPDATE SQL 的参数顺序（与 buildUpdateBalancesSql 的 ? 顺序对应）
  * 顺序：
- *   1. errorMsg（如果 opts.errorMsg !== undefined）
- *   2. native_balance: [addr1, val1, addr2, val2, ...]
- *   3. 每个代币列: [addr1, val1, addr2, val2, ...]
- *   4. WHERE IN: [addr1, addr2, ...]
- * 注意：rows[].balances 的 key 用列名（getTokenColumnName(t)）而非 symbol，
- * 因为同一 symbol 对应不同 address 时会产生多个列。
+ *   1. native_balance: [addr1, val1, addr2, val2, ...]
+ *   2. 每个代币列: [addr1, val1, addr2, val2, ...]
+ *   3. WHERE IN: [addr1, addr2, ...]
+ * 注意：rows[].balances 的 key 用列名（getTokenColumnName(t)）而非 symbol。
  * @param {Array} rows
  * @param {Array} tokens
- * @param {Object} opts
  * @returns {any[]}
  */
-function buildUpdateBalancesParams(rows, tokens, opts = {}) {
+function buildUpdateBalancesParams(rows, tokens) {
   const params = [];
-  if (opts.errorMsg !== undefined) {
-    params.push(opts.errorMsg);
-  }
   for (const r of rows) {
     params.push(r.address, r.nativeBalance);
   }
@@ -277,7 +267,7 @@ export {
   getTokenColumnName,
   buildCreateTableSql,
   buildInsertAddressesSql,
-  buildSelectPendingSql,
+  buildSelectBatchSql,
   buildUpdateBalancesSql,
   buildUpdateBalancesParams
 };

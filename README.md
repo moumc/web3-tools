@@ -155,7 +155,7 @@ npm run distribute -- list.xlsx
 
 从 xlsx 表格读取所有地址，遍历配置好的原生币 + 每个 ERC20 代币，从链上读取余额并**写入 MySQL**（宽表：每行一个地址，每代币一个 `DECIMAL` 列）。
 
-> 适用场景：10W+ 地址 × 数十个代币；支持断点续跑；查询分批 + 失败可重试。优先可靠性。
+> 适用场景：10W+ 地址 × 数十个代币；查询分批 + 失败可重试。优先可靠性。
 
 #### 1. 准备数据库配置
 
@@ -182,7 +182,7 @@ copy config\database.example.json config\database.json
 
 `config/database.json` 与 `config/tokens-export.json` 已在 `.gitignore` 中，**不要入库**。
 
-#### 2. 创建结果表
+#### 2. 自动建表
 
 工具首次运行时会**自动建表**。表名规则：
 
@@ -190,22 +190,20 @@ copy config\database.example.json config\database.json
 balance_export_<sessionId>
 ```
 
-其中 `sessionId` 缺省为 `YYYYMMDD_HHMMSS`（如 `balance_export_20260916_124057`），可通过 `--session <id>` 指定，便于断点续跑时复用同一张表。
+其中 `sessionId` 缺省为 `YYYYMMDD_HHMMSS`（如 `balance_export_20260916_124057`），可通过 `--session <id>` 指定。
 
-表结构示例：
+表结构：
 
 | 列 | 类型 | 说明 |
 |------|------|------|
 | `id` | `BIGINT PK AUTO_INCREMENT` | 行号 |
 | `address` | `VARCHAR(42) UNIQUE NOT NULL` | checksum 地址 |
-| `native_balance` | `DECIMAL(38,0)` | 原生币最小单位（`wei` / 最小位） |
-| `<symbol>_<addr4hex>_balance` | `DECIMAL(38,0)` | 每个代币一列（列名 = `<symbol 小写 + 仅 [a-z0-9_]>_<地址前 4 位 hex 小写>_balance`，例如 `usdt_dac1_balance`） |
-| `status` | `ENUM('pending','done','failed')` | 导出状态（用于断点续跑） |
-| `error_msg` | `VARCHAR(255) NULL` | 单次批次失败原因 |
-| `created_at` | `DATETIME DEFAULT CURRENT_TIMESTAMP` | — |
-| `updated_at` | `DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP` | — |
+| `native_balance` | `DECIMAL(38,18)` | 原生币最小单位 |
+| `<symbol>_<addr4hex>_balance` | `DECIMAL(38,N)` | 每个代币一列（列名 = `<symbol 小写 + 仅 [a-z0-9_]>_<地址前 4 位 hex 小写>_balance`，例如 `usdt_dac1_balance`） |
+| `created_at` | `TIMESTAMP DEFAULT CURRENT_TIMESTAMP` | — |
+| `updated_at` | `TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP` | — |
 
-索引：`UNIQUE(address)`、`INDEX(status)`（断点续跑时快速挑 pending 行）。
+索引：`UNIQUE(address)`、`INDEX(id)`（用于游标分页）。
 
 #### 3. 准备代币列表
 
@@ -224,21 +222,21 @@ balance-export 默认读 **`config/tokens-export.json`**（数组形式，每项
 2. 默认 `config/tokens-export.json`（不存在 `warn` 并回退）
 3. 回退到 `config.json` 的 `tokens`（兼容 `name` 字段）
 
-无效地址（非 `ethers.isAddress`）自动跳过并 `warn`；**同 symbol 不同 address** 会生成不同列（列名带地址前 4 位 hex 区分，例如 `usdt_dac1_balance` 与 `usdt_4f23_balance`），两列都会被查询并写入；**同 address 重复出现**会跳过第二次并 `warn`（同地址 = 同代币 = 同列）；空代币列表也能跑（只查原生币）。
+无效地址（非 `ethers.isAddress`）自动跳过并 `warn`；**同 symbol 不同 address** 会生成不同列（列名带地址前 4 位 hex 区分，例如 `usdt_dac1_balance` 与 `usdt_4f23_balance`），两列都会被查询并写入；**同 address 重复出现**会跳过第二次并 `warn`；空代币列表也能跑（只查原生币）。
 
 #### 4. 命令
 
 ```bash
-# 首次 / 全新导入（自动建表）
+# 完整流程：先导入地址到 MySQL，再分批查余额
 npm run balance-export -- input.xlsx
 
-# 断点续跑：复用已有表，只补 pending
+# 指定会话 ID（多次跑同一文件用相同 session 复用表）
 npm run balance-export -- input.xlsx --session 20260916_124057
 
 # 重建表：先 DROP 再 CREATE
 npm run balance-export -- input.xlsx --fresh
 
-# 调整每批 RPC 调用条数（默认 100，上限 10000）
+# 调整每批 SELECT 行数（默认 100，上限 10000）
 npm run balance-export -- input.xlsx --batch-size 200
 ```
 
@@ -247,9 +245,9 @@ npm run balance-export -- input.xlsx --batch-size 200
 | 参数 | 默认 | 说明 |
 |------|------|------|
 | `<xlsx>` | 必填 | 输入文件路径 |
-| `--session <id>` | `YYYYMMDD_HHMMSS` | 会话 ID（即表名后缀）。**断点续跑必填**——与上次保持一致即可跳过已查的行 |
+| `--session <id>` | `YYYYMMDD_HHMMSS` | 会话 ID（即表名后缀） |
 | `--fresh` | `false` | 先 DROP 再 CREATE；丢数据慎用 |
-| `--batch-size <n>` | `100` | 每批从表里 `SELECT` pending 的地址数；同时也是单次 JSON-RPC 批量请求大小 |
+| `--batch-size <n>` | `100` | 每批从表里 `SELECT` 的地址数；同时也是单次 JSON-RPC 批量请求大小 |
 | `--tokens <file>` | `config/tokens-export.json` | 覆盖默认代币列表 |
 
 #### 5. 输入 xlsx 格式
@@ -259,51 +257,50 @@ npm run balance-export -- input.xlsx --batch-size 200
 - 无效地址（如错别字、非 0x 开头）跳过并 `warn`，不影响其他地址
 - 重复地址（checksum 不区分大小写）仅插入一次，重复的也 `warn`
 
-#### 6. 查询与写入流程
+#### 6. 两阶段流程
 
 ```text
-1. 解析 xlsx → 去重 → INSERT IGNORE 到 balance_export_<session>（status='pending'）
-2. 循环（直到无 pending）：
-   a. SELECT id, address FROM balance_export_<session> WHERE status='pending'
-      ORDER BY id ASC LIMIT <batch-size>   ← 游标分页，断点安全
-   b. 单条 JSON-RPC 批量请求：每地址 1 个 eth_getBalance + N 个 eth_call(balanceOf)
-      失败时整批回滚对应行的 status='failed' 并记 error_msg
-   c. 单条 SQL UPDATE（使用 CASE WHEN）批量回写金额：
-        SET native_balance = CASE id WHEN … END,
-            usdt_balance    = CASE id WHEN … END,
-            status          = 'done',
-            updated_at      = NOW()
-        WHERE id IN (…)
-3. 输出汇总：totalCount / doneCount / failedCount / skippedCount
+Phase 1：导入地址
+  1. 解析 xlsx → 去重 → INSERT IGNORE 到 balance_export_<session>
+     按 1000/批拆分（避免单条 SQL 占位符过多；MySQL 9.x 要求多行 VALUES 各自带括号）
+  2. 输出「已写入 N 个地址」
+
+Phase 2：查询余额 + 回写
+  循环（游标分页，按 id 升序逐批取出）：
+    a. SELECT id, address FROM balance_export_<session>
+       WHERE id > <lastId> ORDER BY id LIMIT <batch-size>
+    b. 单条 JSON-RPC 批量请求：每地址 1 个 eth_getBalance + N 个 eth_call(balanceOf)
+    c. 单条 SQL UPDATE（使用 CASE WHEN）批量回写金额：
+         SET native_balance = CASE address WHEN … END,
+             usdt_dac1_balance = CASE address WHEN … END
+         WHERE address IN (…)
+    d. lastId = 该批最大 id
+  进度日志（每 max(50, total/10) 行输出一次）
 ```
 
-进度日志（每 `max(50, total/10)` 行输出一次）：
+失败处理：
+- **网络/HTTP 错误**：`batchRpcCall` 自动指数退避重试（1s → 2s → 4s）
+- **整批 RPC 失败**：该批地址余额保持 NULL，**继续下一批**（不终止流程）。下次同 session 再跑时该批地址会被重新查询并填入。
+
+#### 7. 进度日志示例
 
 ```
 [balance-export] 会话 20260916_124057 表 balance_export_20260916_124057 启动
-[balance-export] 去重后 1234 个有效地址
-[balance-export] 已写入 1234 个地址到表 balance_export_20260916_124057
-[balance-export] 进度: 已完成 200/1234 (16.2%)
-[balance-export] 进度: 已完成 400/1234 (32.4%)
+[balance-export] 已写入 100940 个地址到表 balance_export_20260916_124057（按 1000/批）
+[balance-export] 开始查询: 总 100940 地址
+[balance-export] 进度: 10094/100940
+[balance-export] 进度: 20188/100940
 …
-[balance-export] 完成: total=1234 done=1232 failed=2 skipped=0
+[balance-export] 完成: 表: balance_export_20260916_124057 共更新 100940 行
 ```
 
-#### 7. 失败重试与断点续跑
-
-- **网络/HTTP 错误**：`batchRpcCall` 自动指数退避重试（1s → 2s → 4s）
-- **单批整批失败**：把该批地址 `status='failed'`，`error_msg` 写明原因，**继续下一批**（不终止整个流程）
-- **进程中断**：再次运行同 `--session`，未完成的 `pending` 行自动续跑；已 `done` 的跳过；上次 `failed` 的重新尝试（除非手动改回 `pending`）
-
-#### 8. 汇总导出 SQL
+#### 8. 查询余额
 
 ```sql
 SELECT address,
        native_balance,
        usdt_dac1_balance,
        aia_abc1_balance,
-       status,
-       error_msg,
        updated_at
 FROM balance_export_20260916_124057
 ORDER BY id;
@@ -315,10 +312,9 @@ ORDER BY id;
 
 ```sql
 SELECT address,
-       native_balance / 1e18 AS native_eth,
+       native_balance / 1e18 AS native_aia,
        usdt_dac1_balance / 1e6 AS usdt,
-       aia_abc1_balance / 1e18 AS aia,
-       status
+       aia_abc1_balance / 1e18 AS aia
 FROM balance_export_20260916_124057;
 ```
 

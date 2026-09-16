@@ -8,7 +8,7 @@ import {
   getTokenColumnName,
   buildCreateTableSql,
   buildInsertAddressesSql,
-  buildSelectPendingSql,
+  buildSelectBatchSql,
   buildUpdateBalancesSql,
   buildUpdateBalancesParams
 } from '../core/schema.js';
@@ -22,10 +22,8 @@ if (typeof XLSX.set_fs === 'function') {
  * @typedef {Object} BalanceExportResult
  * @property {string} sessionId
  * @property {string} tableName
- * @property {number} totalCount - 入库地址数（含已存在跳过）
- * @property {number} doneCount - 状态变为 done 的行数
- * @property {number} failedCount - 整批失败的行数
- * @property {number} skippedCount - 重启时已 done 跳过的行数
+ * @property {number} totalCount - 表里地址总数
+ * @property {number} updatedCount - 本轮 UPDATE 写入的行数
  */
 
 // =====================================================================
@@ -312,17 +310,21 @@ function indexTokenResultsByAddress(tokenResults, addressesInOrder, tokens) {
 }
 
 /**
- * 执行余额导出（MySQL 模式）
+ * 执行余额导出（MySQL 模式）：两阶段
+ *   Phase 1：解析 xlsx → 全量 INSERT IGNORE 到 balance_export_<session>
+ *   Phase 2：游标分批 SELECT id,address → JSON-RPC 批量查余额 → 单条 UPDATE (CASE WHEN) 回写
+ * 不写 status / error_msg；失败的列保持 NULL，下次跑会重查。
  * @param {Object} params
- * @param {Object} params.config - 完整 config（取 network + tokens 回退）
+ * @param {Object} params.config - 完整 config（取 network.rpcUrl）
  * @param {string} params.inputPath - 输入 xlsx 路径
  * @param {Object} params.pool - mysql2 pool
  * @param {string} [params.sessionId] - 不传则生成时间戳
  * @param {string} [params.tokensPath] - --tokens 覆盖
+ * @param {Array} [params.tokens] - 直接传代币列表，跳过文件
  * @param {boolean} [params.fresh=false] - 是否 DROP 旧表
- * @param {number} [params.batchSize=100] - 每批从 DB 取的地址数（也是 RPC batch 大小）
+ * @param {number} [params.batchSize=100] - 每批 SELECT 行数
  * @param {number} [params.maxRpcRetries=3] - RPC 失败重试
- * @param {Object} [params.rpcBatchCall] - 注入，便于测试；默认 batchRpcCall
+ * @param {Object} [params.rpcBatchCall] - 注入
  * @param {string} [params.rpcUrl] - 默认 config.network.rpcUrl
  * @param {Object} params.logger
  * @returns {Promise<BalanceExportResult>}
@@ -387,44 +389,44 @@ async function runBalanceExport({
   logger.info(`建表: ${tableName}`);
   await pool.execute(createSql);
 
-  // 4. 插入地址
-  const insertSql = buildInsertAddressesSql(sid, addresses);
-  await pool.execute(insertSql, addresses);
+  // 4. 插入地址（按批拆分，避开 MySQL prepared statement 占位符上限 ~65535）
+  // 用 pool.query 走客户端转义，避免 server-side PREPARE 对占位符数量的限制
+  const INSERT_CHUNK = 1000;
+  const mysql = await import('mysql2/promise.js');
+  for (let i = 0; i < addresses.length; i += INSERT_CHUNK) {
+    const chunk = addresses.slice(i, i + INSERT_CHUNK);
+    const insertSql = buildInsertAddressesSql(sid, chunk);
+    const formatted = mysql.default.format(insertSql, chunk);
+    await pool.query(formatted);
+  }
+  logger.info(`已写入 ${addresses.length} 个地址到表 ${tableName}（按 ${INSERT_CHUNK}/批）`);
 
-  // 5. 统计总数与已完成数
+  // 5. 统计已写入地址数
   const [totalRows] = await pool.execute(
     `SELECT COUNT(*) AS cnt FROM \`${tableName}\`;`
   );
   const totalCount = Number(totalRows[0].cnt);
-  const [doneRows] = await pool.execute(
-    `SELECT COUNT(*) AS cnt FROM \`${tableName}\` WHERE status = 'done';`
-  );
-  const initialDoneCount = Number(doneRows[0].cnt);
-  logger.info(`开始查询: 总 ${totalCount} 地址，已 done ${initialDoneCount}，待处理 ${totalCount - initialDoneCount}`);
+  logger.info(`开始查询: 总 ${totalCount} 地址`);
 
-  // 6. 分批查询 + 余额更新
-  const progressInterval = calcProgressInterval(totalCount - initialDoneCount);
+  // 6. 游标分批 select + update（无 status，按 id 升序逐批取出全部）
+  const progressInterval = calcProgressInterval(totalCount);
   let lastId = 0;
   let processed = 0;
-  let doneThisRun = 0;
-  let failedThisRun = 0;
+  let updatedThisRun = 0;
 
   while (true) {
-    const selectSql = buildSelectPendingSql(sid, lastId, batchSize);
+    const selectSql = buildSelectBatchSql(sid, lastId, batchSize);
     const [rows] = await pool.execute(selectSql, [lastId, batchSize]);
     if (rows.length === 0) break;
 
     const batchAddresses = rows.map(r => r.address);
-    const maxRowId = Math.max(...rows.map(r => Number(r.id)));
-    lastId = maxRowId;
+    lastId = Math.max(...rows.map(r => Number(r.id)));
 
     // 6.1 构造 RPC calls：每个地址 × (1 原生币 + N 代币)
     const calls = [];
-    // 原生币
     for (const addr of batchAddresses) {
       calls.push({ id: `native:${addr}`, method: 'eth_getBalance', params: [addr, 'latest'] });
     }
-    // ERC20
     for (const t of tokenList) {
       const data = encodeBalanceOfData(t.address);
       for (const addr of batchAddresses) {
@@ -432,7 +434,7 @@ async function runBalanceExport({
       }
     }
 
-    // 6.2 调批量 RPC（带重试 + 超时由 batchRpcCall 默认处理）
+    // 6.2 调批量 RPC
     let results;
     try {
       results = await rpcBatchCall({
@@ -442,102 +444,43 @@ async function runBalanceExport({
         timeoutMs: 30000
       });
     } catch (err) {
-      // 整批 HTTP 失败：标记整批 failed，重试仍失败的最终由 catch 处理
+      // 整批 HTTP 失败：该批列保持 NULL（下一轮重试时此批地址自然会被重新取出）
       logger.error(`整批 RPC 失败 (${batchAddresses.length} 地址): ${err.message}`);
-      const failedRows = batchAddresses.map(addr => ({
-        address: addr,
-        nativeBalance: null,
-        balances: Object.fromEntries(tokenList.map(t => [getTokenColumnName(t), null]))
-      }));
-      const updateSql = buildUpdateBalancesSql(sid, tokenList, failedRows,
-        { status: 'failed', errorMsg: err.message });
-      const updateParams = buildUpdateBalancesParams(failedRows, tokenList,
-        { status: 'failed', errorMsg: err.message });
-      await pool.execute(updateSql, updateParams);
-      failedThisRun += batchAddresses.length;
       processed += batchAddresses.length;
       continue;
     }
 
-    // 6.3 切分 results：前 batchAddresses.length 是 native，剩下是 token（按 token 维度连续）
+    // 6.3 切分 results：前 batchAddresses.length 是 native，剩下是 token
     const nativeResults = results.slice(0, batchAddresses.length);
     const tokenResults = results.slice(batchAddresses.length);
-
     const tokenByAddr = indexTokenResultsByAddress(tokenResults, batchAddresses, tokenList);
 
-    // 6.4 构造 UPDATE 行
+    // 6.4 构造 UPDATE 行：原生币 ok → 写值；否则 NULL
     const updateRows = batchAddresses.map((addr, i) => {
       const nativeR = nativeResults[i];
       const nativeBalance = nativeR && nativeR.ok ? nativeR.result : null;
       const balances = tokenByAddr.get(addr) || {};
-      const allFailed = !nativeR?.ok && Object.values(balances).every(v => v === null);
-      return {
-        address: addr,
-        nativeBalance,
-        balances,
-        _allFailed: allFailed
-      };
+      return { address: addr, nativeBalance, balances };
     });
 
-    // 拆 done / failed 两组，分别 UPDATE（status 不同）
-    const failedRows = updateRows.filter(r => r._allFailed);
-    const doneRows = updateRows.filter(r => !r._allFailed);
-
-    if (doneRows.length > 0) {
-      const sql = buildUpdateBalancesSql(sid, tokenList, doneRows.map(r => ({
-        address: r.address,
-        nativeBalance: r.nativeBalance,
-        balances: r.balances
-      })), { status: 'done' });
-      const params = buildUpdateBalancesParams(
-        doneRows.map(r => ({
-          address: r.address,
-          nativeBalance: r.nativeBalance,
-          balances: r.balances
-        })),
-        tokenList,
-        { status: 'done' }
-      );
-      await pool.execute(sql, params);
-      doneThisRun += doneRows.length;
-    }
-
-    if (failedRows.length > 0) {
-      const rowsToUpdate = failedRows.map(r => ({
-        address: r.address,
-        nativeBalance: null,
-        balances: Object.fromEntries(tokenList.map(t => [getTokenColumnName(t), null]))
-      }));
-      const errMsg = failedRows[0]._allFailed
-        ? (() => {
-            // 拼接错误原因（取首个 native 错误）
-            const n = nativeResults[batchAddresses.indexOf(failedRows[0].address)];
-            return (n && n.error) || 'all queries failed';
-          })()
-        : 'all queries failed';
-      const sql = buildUpdateBalancesSql(sid, tokenList, rowsToUpdate,
-        { status: 'failed', errorMsg: errMsg });
-      const params = buildUpdateBalancesParams(rowsToUpdate, tokenList,
-        { status: 'failed', errorMsg: errMsg });
-      await pool.execute(sql, params);
-      failedThisRun += failedRows.length;
-    }
+    const updateSql = buildUpdateBalancesSql(sid, tokenList, updateRows);
+    const updateParams = buildUpdateBalancesParams(updateRows, tokenList);
+    await pool.execute(updateSql, updateParams);
+    updatedThisRun += updateRows.length;
 
     processed += batchAddresses.length;
-    if (processed % progressInterval === 0 || processed === totalCount - initialDoneCount) {
-      logger.info(`进度: ${processed}/${totalCount - initialDoneCount}`);
+    if (processed % progressInterval === 0 || processed === totalCount) {
+      logger.info(`进度: ${processed}/${totalCount}`);
     }
   }
 
-  logger.info(`=== 完成 === 表: ${tableName} done=${doneThisRun} failed=${failedThisRun}`);
+  logger.info(`=== 完成 === 表: ${tableName} 共更新 ${updatedThisRun} 行`);
 
   return {
     sessionId: sid,
     tableName,
     totalCount,
-    doneCount: doneThisRun + initialDoneCount,
-    failedCount: failedThisRun,
-    skippedCount: initialDoneCount
+    updatedCount: updatedThisRun
   };
 }
 
