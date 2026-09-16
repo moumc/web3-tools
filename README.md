@@ -1,6 +1,17 @@
 # Web3 Tools
 
-类 Ethereum 区块链批量操作工具。
+类 Ethereum 区块链批量操作工具。基于 [ethers.js v6](https://docs.ethers.org/) 与 [SheetJS](https://docs.sheetjs.com/)，提供**账户生成 / 余额查询 / 合约执行 / 代币归集 / 原生币归集 / 批量分发**等常见运维场景，所有操作通过 RPC 与链上交互，本地完成签名。
+
+## 功能总览
+
+| 命令 | 用途 | 是否需要链上签名 |
+|------|------|------------------|
+| `balance` | 批量查询原生币与 ERC20 代币余额 | 否（只读） |
+| `execute` | 批量执行预编码合约调用 | 是 |
+| `collect` | 批量归集多个账户的 ERC20 代币到目标地址 | 是 |
+| `collect-native` | 批量归集多个账户的原生币到目标地址 | 是 |
+| `distribute` | 从单一发送方向 xlsx 收款表批量分发原生币 | 是 |
+| `gen-account` | 本地生成以太坊地址与私钥（带三层防御校验） | 否（完全离线） |
 
 ## 安装
 
@@ -8,31 +19,47 @@
 npm install
 ```
 
+> 依赖：[`ethers@^6.13.0`](https://www.npmjs.com/package/ethers) 与 [`xlsx`](https://www.npmjs.com/package/xlsx)（私有 tarball 源）。开发依赖仅 [`jest@^29`](https://jestjs.io/)。
+
 ## 配置
 
-> ⚠️ **安全提示**：`config/config.json` 已在 `.gitignore` 中，**绝不能**提交到仓库。
-> 私钥等敏感信息请放在本地配置文件里。
+> ⚠️ **安全提示**：`config/config.json` 已在 `.gitignore` 中，**绝不能**提交到仓库。私钥等敏感信息请放在本地配置文件里。
 
 首次使用从模板复制：
 
 ```bash
+# Windows (Git Bash)
 cp config/config.example.json config/config.json
+
+# Windows (PowerShell / CMD)
+copy config\config.example.json config\config.json
 ```
 
 然后编辑 `config/config.json`：
 
-- `network.rpcUrl`：RPC 节点地址
-- `network.chainId`：链 ID
-- `network.nativeSymbol`：原生币符号（如 ETH、AIA）
-- `accounts`：账户列表（地址 + 私钥）—— **不要提交含私钥的文件**
-- `tokens`：代币配置
-- `contracts`：合约配置
-- `collector.targetAddress`：归集目标地址
-- `execution.logLevel`：日志级别
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `network.rpcUrl` | ✅ | RPC 节点 URL（支持 Infura / Alchemy / 自建节点） |
+| `network.chainId` | ✅ | 链 ID（如 1 = 主网） |
+| `network.nativeSymbol` | ✅ | 原生币符号（ETH、BNB、AIA 等，仅用于日志显示） |
+| `accounts[]` | ✅ | 账户列表，元素 `{ address, privateKey }` |
+| `accounts[].address` | ✅ | 账户地址（任意大小写，运行时统一 checksum） |
+| `accounts[].privateKey` | ✅ | 账户私钥（`0x` 前缀 64 位十六进制） |
+| `tokens` | ✅ | ERC20 代币映射 `{ name: { address, name, decimals } }` |
+| `contracts` | ✅ | 合约调用映射 `{ name: { address, input } }`（`input` 为已编码 calldata） |
+| `collector.targetAddress` | collect 时必填 | 归集目标地址 |
+| `distributor.senderAddress` | 可选 | 分发时的发送地址（须存在于 `accounts`，未配置时取 `accounts[0]`） |
+| `execution.logLevel` | 可选 | 日志级别（`error` / `warn` / `info` / `debug`），默认 `info` |
+
+`loadConfig` 会在启动时校验：缺失 `network` / `accounts` / `tokens` / `contracts` 或任一账户缺少 `address` / `privateKey` 都会直接报错退出。
 
 ## 使用
 
+> 所有命令都在仓库根目录执行。除 `gen-account` 外，其余命令都需要有效 `config/config.json`。
+
 ### 查询余额
+
+读取 `accounts` 中每个账户的原生币 + `tokens` 中每个代币的余额。
 
 ```bash
 npm run balance
@@ -40,11 +67,15 @@ npm run balance
 
 ### 执行合约
 
+按 `contracts` 中的预编码 calldata，依次在 `accounts` 每个账户上发送交易（gas 上限 300000）。先 `estimateGas` 预检，预估失败直接跳过该笔；执行前后对比余额变化并写入日志。
+
 ```bash
 npm run execute
 ```
 
-### 归集代币（ERC20）
+### 归集 ERC20 代币
+
+将 `accounts` 中每个账户在 `tokens` 里的全部余额转至 `collector.targetAddress`。单账户代币余额为 0 时跳过且不消耗 Gas。
 
 ```bash
 npm run collect
@@ -52,14 +83,76 @@ npm run collect
 
 ### 归集原生币
 
+将 `accounts` 中每个账户的全部原生币转至 `collector.targetAddress`（gas 上限 21000，转账金额自动预留 Gas 之外的余额）。
+
 ```bash
 npm run collect-native
 ```
 
-### 生成账户
+### 批量分发原生币（distribute）
 
-生成新的以太坊地址与私钥，本地使用 CSPRNG，私钥**不会上传任何远端**。
-输出为 JSON 数组，请妥善保管。
+从 xlsx 表格读取收款清单，从单一发送地址逐笔向所有收款地址转原生币，**数量自动按 18 位精度换算**。
+
+```bash
+# 先预览，不实际发送（强烈建议先 dry-run）
+npm run distribute -- list.xlsx --dry-run
+
+# 确认无误后正式执行
+npm run distribute -- list.xlsx
+```
+
+#### xlsx 格式
+
+- **列 1**：收款地址（任意大小写，运行时统一 checksum）
+- **列 2**：数量
+- **首行**：表头（自动跳过）
+- 空白行静默跳过
+- 默认读取第一个工作表
+
+示例：
+
+| 地址 | 数量 |
+|------|------|
+| `0xAbC…123` | `100` |
+| `0xDef…456` | `2.5` |
+| `0x789…abc` | `1,000` |
+| `0xfed…cba` | `1e3` |
+
+#### 行为说明
+
+- **发送方**：`config.distributor.senderAddress`（须存在于 `accounts`，否则报错）；未配置时默认 `accounts[0]`，并在日志中告警
+- **文件格式校验**：读取前检查 xlsx 魔数（`PK\x03\x04`），非 xlsx 文件直接拒绝
+- **数量解析**：支持小数、千分位逗号（`1,000`）、科学计数法（`1e3` / `1.5e-2`）、前导 `+`；小数位超过 18 位报错
+- **地址校验**：每行地址必须通过 `ethers.isAddress`，否则跳过该行并记录原因
+- **重复地址**：检测重复并在日志中告警，但**仍执行转账**（请人工确认是否预期）
+- **预检**：发送前校验余额 ≥ 转账总额 + Gas 预留（`gasPrice × 21000 × 笔数`），不足则整体中止，一笔不发
+- **逐笔预估**：单笔交易先 `estimateGas`，预估失败仅跳过该笔，不影响其他转账
+- **顺序执行**：每笔等待链上确认后再发下一笔，避免 nonce 竞争
+- **容错**：单行地址 / 数量非法只跳过该行并记录警告，其余转账继续
+
+#### 返回值（dry-run 与正式执行均为同一 API）
+
+```js
+{
+  dryRun: boolean,
+  results: Array<{
+    success: boolean,
+    rowNumber: number,        // 在 xlsx 中的行号（含表头）
+    toAddress: string,        // checksum 格式
+    rawAmount: string,        // 人类可读数量
+    amountUnits: string,      // 最小单位数量（BigInt 字符串）
+    txHash: string,           // 交易哈希，失败时为空
+    error?: string            // 失败原因
+  }>,
+  total: bigint,              // 转账总额（最小单位）
+  successCount: number,
+  failedCount: number
+}
+```
+
+### 生成账户（gen-account）
+
+生成新的以太坊地址与私钥，**完全离线**，私钥**不会上传任何远端**。输出为 JSON 数组，请妥善保管。
 
 ```bash
 # 生成 1 个（默认）
@@ -85,20 +178,85 @@ npm run gen-account -- 5
 }]
 ```
 
-**安全保证（三层防御）**
+#### 安全保证（三层防御）
 
-1. **熵源探测**：模块加载与每次生成前探测 `node:crypto.randomBytes` 或 `WebCrypto.getRandomValues`；任一可用方生成；二者皆缺失直接抛错拒绝生成
-2. **强熵**：32 字节（256 bit）熵，源自 OS 内核 CSPRNG；远超比特币/BIP-39 推荐下限（128 bit）
-3. **签名往返校验**：每个账户生成后立即用私钥对固定消息签名并 `verifyMessage` 恢复地址，与声称地址比对；任一步骤不符即抛错——可捕获 ethers 升级或实现 bug 导致的地址派生错误
+1. **熵源探测**：模块加载与每次生成前探测 `node:crypto.randomBytes`（优先）或 `WebCrypto.getRandomValues`；任一可用方生成；二者皆缺失直接抛错拒绝生成。绝不使用 `Math.random` 等弱源。
+2. **强熵**：32 字节（256 bit）熵，源自 OS 内核 CSPRNG；远超比特币 / BIP-39 推荐下限（128 bit）。
+3. **签名往返校验**：每个账户生成后立即用私钥对固定消息 `web3-tools:address-derivation-check` 签名并 `verifyMessage` 恢复地址，与声称地址比对；任一步骤不符即抛错——可捕获 ethers 升级或实现 bug 导致的地址派生错误。
 
-`meta.verified === true` 表示本轮已通过上述校验。生产代码（CLI、库调用）都会执行此校验；集成测试 `tests/actions/account.integration.test.js` 用真实 ethers 跑 sign+recover 闭环。
+`meta.verified === true` 表示本轮已通过上述校验。生产代码（CLI、库调用）都会执行此校验；集成测试 `tests/actions/account.integration.test.js` 用真实 ethers 跑 sign + recover 闭环。
+
+## 项目结构
+
+```text
+src/
+├── index.js                   # CLI 入口，按子命令分发
+├── core/
+│   ├── config.js              # 加载 / 校验 config.json
+│   ├── logger.js              # 控制台 + 文件双输出，懒加载日志流
+│   ├── rpc.js                 # JsonRpcProvider 封装
+│   └── xlsx.js                # xlsx 解析、金额归一化、转账记录提取
+└── actions/
+    ├── account.js             # gen-account：账户生成 + 三层防御
+    ├── balance.js             # balance：原生币 + ERC20 余额查询
+    ├── executor.js            # execute：批量合约执行
+    ├── collect.js             # collect / collect-native：代币与原生币归集
+    └── distribute.js          # distribute：xlsx 驱动批量分发
+
+tests/
+├── actions/                   # balance / collect / distribute / executor / account 单元测试
+│                              # 含 account.integration.test.js（真实 ethers 跑闭环）
+└── core/                      # config / logger / rpc / xlsx 单元测试
+
+config/
+├── config.example.json        # 模板（已入库）
+└── config.json                # 实际配置（已 gitignore，绝对不要入库）
+
+coverage/                      # 测试覆盖率产物（已 gitignore）
+docs/                          # 项目文档
+logs/                          # 运行日志（已 gitignore）
+```
+
+## 测试
+
+```bash
+npm test
+```
+
+使用 Jest + ESM（`--experimental-vm-modules`）。覆盖率阈值见 `jest.config.js`：分支 / 函数 / 行 / 语句均 ≥ 80%，产物输出到 `coverage/`。
+
+测试组织：
+
+| 类型 | 覆盖范围 | 文件 |
+|------|----------|------|
+| 单元 | 配置加载、日志、RPC、xlsx 解析、金额归一化、命令各分支 | `tests/core/*.test.js`、`tests/actions/*.test.js` |
+| 集成 | 真实 ethers 跑账户生成 sign + recover 闭环 | `tests/actions/account.integration.test.js` |
 
 ## 日志
 
-日志输出到 `logs/app.log`，同时打印到控制台。
+所有命令的日志同时输出到：
+
+- **控制台**：按 `execution.logLevel` 过滤（JSON 格式单行）
+- **文件**：`logs/app.log`（懒加载，首次写入时创建；JSON 格式便于解析）
+
+日志条目格式：
+
+```json
+{"timestamp":"2026-07-08T12:40:57.659Z","level":"info","message":"[0xAbC…] 原生币余额: 1.5 ETH"}
+```
 
 ## 安全
 
-- 本仓库不存储任何真实私钥
+- 本仓库**不存储任何真实私钥**——`config/config.json` 已在 `.gitignore` 中
 - 修改配置前请确认 `.gitignore` 中包含 `config/config.json`
 - 提交前可运行 `git status` 再次确认没有敏感文件被暂存
+- `gen-account` 输出包含私钥，请妥善保管；建议管道重定向到本地加密存储，**不要写入公共日志或粘贴到公共渠道**
+- 所有合约 / 归集 / 分发交易都先 `estimateGas` 预检，明显会回滚的交易不会浪费 Gas
+- `distribute` 在发第一笔前预检余额（含 Gas 预留），整体不足时一笔不发，避免半完成状态
+
+## 开发提示
+
+- 所有源文件使用 **ESM**（`"type": "module"`），导入路径需带 `.js` 后缀
+- 金额统一以 `bigint` 在最小单位运算，仅在展示与日志处用 `ethers.formatUnits` 转回字符串
+- 任何对外暴露函数都使用 JSDoc 标注参数与返回值类型，便于编辑器补全与静态检查
+- 提交前请确保 `npm test` 通过且覆盖率 ≥ 80%
