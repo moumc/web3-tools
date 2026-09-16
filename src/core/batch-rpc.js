@@ -1,13 +1,16 @@
-import { ethers } from 'ethers';
-
 /**
- * JSON-RPC 2.0 批量请求工具
+ * JSON-RPC 2.0 单条请求工具（顺序逐条，**不并发**）
  *
- * 设计要点：
- * - 单次 HTTP 请求携带多条 RPC（call 数组），省去每笔单独 round-trip
- * - HTTP 层错误（5xx、超时、网络断开）→ 整批重试（指数退避）
- * - HTTP 200 但某条 RPC 报 error → 仅该条标记失败，其它不受影响
- * - 响应缺 id → 标记为响应缺失错误
+ * 设计要点（优先可靠性，效率次要）：
+ * - 每条 call 单独发一条 HTTP POST，不拼 batch
+ * - 每条 call 失败按指数退避重试（1s → 2s → 4s）
+ * - HTTP 层错误 / RPC error / 响应缺字段 → 标记该条 ok=false，其它不受影响
+ * - 输入 calls 按原顺序返回结果数组
+ *
+ * 不发 JSON-RPC batch 的原因：
+ * - 部分生产 RPC 不支持 batch（会返回 method not found）
+ * - 服务端可能按接收顺序处理 batch，第一条失败影响后续
+ * - server 端可能重写 id，与请求 id 不匹配导致结果错位（之前观察到的现象）
  */
 
 const DEFAULT_TIMEOUT_MS = 30000;
@@ -47,15 +50,16 @@ function sleep(ms) {
 }
 
 /**
- * 执行单次 HTTP 批量请求
+ * 单条 JSON-RPC 调用（带超时）
  * @param {Object} args
  * @param {string} args.rpcUrl
- * @param {Array<{id: number|string, method: string, params: any[]}>} args.calls
+ * @param {string} args.method
+ * @param {any[]} [args.params]
  * @param {number} [args.timeoutMs]
  * @param {typeof fetch} [args.fetchImpl]
- * @returns {Promise<Array>}
+ * @returns {Promise<any>} result 字段值
  */
-async function executeBatch({ rpcUrl, calls, timeoutMs = DEFAULT_TIMEOUT_MS, fetchImpl }) {
+async function singleRpc({ rpcUrl, method, params, timeoutMs = DEFAULT_TIMEOUT_MS, fetchImpl }) {
   const f = fetchImpl || globalThis.fetch;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -64,12 +68,12 @@ async function executeBatch({ rpcUrl, calls, timeoutMs = DEFAULT_TIMEOUT_MS, fet
     const response = await f(rpcUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(calls.map(c => ({
+      body: JSON.stringify({
         jsonrpc: '2.0',
-        id: c.id,
-        method: c.method,
-        params: c.params || []
-      }))),
+        id: 0,
+        method,
+        params: params || []
+      }),
       signal: controller.signal
     });
 
@@ -78,43 +82,23 @@ async function executeBatch({ rpcUrl, calls, timeoutMs = DEFAULT_TIMEOUT_MS, fet
     }
 
     const body = await response.json();
-    if (!Array.isArray(body)) {
-      throw new Error('响应不是 JSON-RPC batch 数组');
+    if (body && body.error) {
+      const msg = body.error.message || JSON.stringify(body.error);
+      throw new Error(`RPC error: ${msg}`);
     }
-    return body;
+    return body.result;
   } finally {
     clearTimeout(timer);
   }
 }
 
 /**
- * 将 JSON-RPC batch 响应映射回 calls 顺序
- * @param {Array} calls - 原始请求
- * @param {Array} response - 服务端响应（顺序任意）
- * @returns {Array<{id, ok, result?, error?}>}
- */
-function mapResponseToCalls(calls, response) {
-  const byId = new Map();
-  for (const item of response) {
-    if (item && item.id !== undefined) {
-      byId.set(item.id, item);
-    }
-  }
-  return calls.map((c) => {
-    const item = byId.get(c.id);
-    if (!item) {
-      return { id: c.id, ok: false, error: `响应缺少 id=${c.id} 的项` };
-    }
-    if (item.error) {
-      const msg = item.error.message || JSON.stringify(item.error);
-      return { id: c.id, ok: false, error: msg };
-    }
-    return { id: c.id, ok: true, result: item.result };
-  });
-}
-
-/**
- * 公开 API：带重试与超时的批量 RPC 调用
+ * 顺序执行一组 JSON-RPC 调用（**不并发**）
+ * 行为：
+ * - 按 calls 数组顺序逐条执行
+ * - 每条单独 try/catch，失败按指数退避重试
+ * - 返回值与 calls 等长，按输入顺序对齐：{ id, ok, result?, error? }
+ *
  * @param {Object} args
  * @param {string} args.rpcUrl
  * @param {Array<{id: number|string, method: string, params: any[]}>} args.calls
@@ -122,6 +106,7 @@ function mapResponseToCalls(calls, response) {
  * @param {number} [args.retries=3]
  * @param {(attemptIndex: number) => number} [args.backoffMs]
  * @param {typeof fetch} [args.fetchImpl]
+ * @param {(call: any, index: number) => void} [args.onProgress] - 每条完成后回调（用于日志）
  * @returns {Promise<Array<{id, ok, result?, error?}>>}
  */
 async function batchRpcCall({
@@ -130,7 +115,8 @@ async function batchRpcCall({
   timeoutMs = DEFAULT_TIMEOUT_MS,
   retries = DEFAULT_RETRIES,
   backoffMs = defaultBackoff,
-  fetchImpl
+  fetchImpl,
+  onProgress
 }) {
   if (!Array.isArray(calls)) {
     throw new Error('calls 必须为数组');
@@ -142,31 +128,49 @@ async function batchRpcCall({
     throw new Error('rpcUrl 必填');
   }
 
-  let lastError;
-  const maxAttempts = retries + 1;
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    try {
-      const response = await executeBatch({ rpcUrl, calls, timeoutMs, fetchImpl });
-      return mapResponseToCalls(calls, response);
-    } catch (err) {
-      lastError = err;
-      // 最后一次不再等待
-      if (attempt < maxAttempts - 1) {
-        await sleep(backoffMs(attempt));
+  const out = [];
+  for (let i = 0; i < calls.length; i += 1) {
+    const c = calls[i];
+    let lastError = null;
+    let result = null;
+    let ok = false;
+
+    const maxAttempts = retries + 1;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        result = await singleRpc({ rpcUrl, method: c.method, params: c.params, timeoutMs, fetchImpl });
+        ok = true;
+        lastError = null;
+        break;
+      } catch (err) {
+        lastError = err;
+        if (attempt < maxAttempts - 1) {
+          await sleep(backoffMs(attempt));
+        }
+      }
+    }
+
+    if (ok) {
+      out.push({ id: c.id, ok: true, result });
+    } else {
+      out.push({ id: c.id, ok: false, error: lastError ? lastError.message : 'unknown' });
+    }
+
+    if (typeof onProgress === 'function') {
+      try {
+        onProgress(c, i);
+      } catch (_) {
+        // 回调异常不影响主流程
       }
     }
   }
-  // 整批 HTTP 层失败：抛出明确错误，让调用方知晓"这一批完全没拿到响应"
-  const reason = lastError && lastError.message
-    ? lastError.message
-    : 'RPC 请求失败';
-  const err = new Error(`RPC 请求失败: ${reason}`);
-  err.lastError = lastError;
-  throw err;
+
+  return out;
 }
 
 export {
   batchRpcCall,
+  singleRpc,
   encodeBalanceOfData,
   defaultBackoff
 };

@@ -442,28 +442,29 @@ async function runBalanceExport({
     }
     logger.info(`[Phase 2] 批次 ${batchNo}/${totalBatches}：构造 ${calls.length} 个 RPC 调用（${batchAddresses.length} 地址 × ${1 + tokenList.length} 项）`);
 
-    // 6.2 调批量 RPC
+    // 6.2 顺序逐条 RPC（不并发），每条单独重试；每 50 条打一次进度
     const t0 = Date.now();
-    let results;
-    try {
-      results = await rpcBatchCall({
-        rpcUrl: finalRpcUrl,
-        calls,
-        retries: maxRpcRetries,
-        timeoutMs: 30000
-      });
-      const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-      const okCount = results.filter(r => r && r.ok).length;
-      const failCount = results.length - okCount;
-      logger.info(`[Phase 2] 批次 ${batchNo}/${totalBatches}：RPC 完成 ${elapsed}s，成功 ${okCount} 失败 ${failCount}`);
-    } catch (err) {
-      const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
-      logger.error(`[Phase 2] 批次 ${batchNo}/${totalBatches}：整批 RPC 失败 ${elapsed}s（${batchAddresses.length} 地址）: ${err.message}`);
-      processed += batchAddresses.length;
-      const pct = ((processed / totalCount) * 100).toFixed(1);
-      logger.info(`[Phase 2] 进度 ${pct}%：${processed}/${totalCount}（失败列保持 NULL，下次重跑自动重查）`);
-      continue;
-    }
+    let doneCount = 0;
+    let failCount = 0;
+    const results = await rpcBatchCall({
+      rpcUrl: finalRpcUrl,
+      calls,
+      retries: maxRpcRetries,
+      timeoutMs: 30000,
+      onProgress: (call, idx) => {
+        doneCount += 1;
+        // 这里拿不到 ok/error（进度回调没有结果），所以仅递增计数，最后统计用
+        if ((idx + 1) % 50 === 0 || idx === calls.length - 1) {
+          const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+          const rate = (doneCount / parseFloat(elapsed || '1')).toFixed(1);
+          logger.info(`[Phase 2] 批次 ${batchNo}/${totalBatches}：RPC 进度 ${idx + 1}/${calls.length}（${elapsed}s，${rate} 条/s）`);
+        }
+      }
+    });
+    const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+    failCount = results.filter(r => r && !r.ok).length;
+    const okCount = results.length - failCount;
+    logger.info(`[Phase 2] 批次 ${batchNo}/${totalBatches}：RPC 完成 ${elapsed}s，成功 ${okCount} 失败 ${failCount}`);
 
     // 6.3 切分 results：前 batchAddresses.length 是 native，剩下是 token
     const nativeResults = results.slice(0, batchAddresses.length);
