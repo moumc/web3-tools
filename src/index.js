@@ -5,13 +5,14 @@ import { queryBalances } from './actions/balance.js';
 import { executeContracts } from './actions/executor.js';
 import { collectTokens, collectNativeCoins } from './actions/collect.js';
 import { generateAccounts } from './actions/account.js';
+import { runDistribute } from './actions/distribute.js';
 
 async function main() {
   const args = process.argv.slice(2);
   const action = args[0];
 
   if (!action) {
-    console.error('请指定操作: balance, execute, collect, collect-native, gen-account');
+    console.error('请指定操作: balance, execute, collect, collect-native, distribute, gen-account');
     console.error('用法: node src/index.js <action> [args]');
     process.exit(1);
   }
@@ -68,9 +69,19 @@ async function main() {
         process.exit(1);
       }
       await collectNativeCoins(config.accounts, config.network.nativeSymbol, config.collector.targetAddress, rpcClient, logger);
+    } else if (action === 'distribute') {
+      // 第一个非 flag 参数为 xlsx 路径
+      const xlsxPath = args.slice(1).find(a => !a.startsWith('--'));
+      if (!xlsxPath) {
+        console.error('用法: node src/index.js distribute <xlsx 文件路径> [--dry-run]');
+        console.error('xlsx 格式: 列1=收款地址, 列2=数量, 首行为表头');
+        process.exit(1);
+      }
+      const dryRun = args.includes('--dry-run');
+      await runDistribute(config, xlsxPath, rpcClient, logger, { dryRun });
     } else {
       console.error(`未知操作: ${action}`);
-      console.error('可用操作: balance, execute, collect, collect-native, gen-account');
+      console.error('可用操作: balance, execute, collect, collect-native, distribute, gen-account');
       process.exit(1);
     }
   } catch (error) {

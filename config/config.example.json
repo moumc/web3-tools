@@ -30,6 +30,9 @@
   "collector": {
     "targetAddress": "0x0000000000000000000000000000000000000000"
   },
+  "distributor": {
+    "senderAddress": "0x0000000000000000000000000000000000000000"
+  },
   "execution": {
     "logLevel": "info"
   }

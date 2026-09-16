@@ -9,11 +9,13 @@
     "execute": "node src/index.js execute",
     "collect": "node src/index.js collect",
     "collect-native": "node src/index.js collect-native",
+    "distribute": "node src/index.js distribute",
     "gen-account": "node src/index.js gen-account",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js"
   },
   "dependencies": {
-    "ethers": "^6.13.0"
+    "ethers": "^6.13.0",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
     "jest": "^29.7.0"
