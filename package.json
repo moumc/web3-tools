@@ -10,6 +10,7 @@
     "collect": "node src/index.js collect",
     "collect-native": "node src/index.js collect-native",
     "distribute": "node src/index.js distribute",
+    "balance-export": "node src/index.js balance-export",
     "gen-account": "node src/index.js gen-account",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js"
   },

@@ -6,13 +6,14 @@ import { executeContracts } from './actions/executor.js';
 import { collectTokens, collectNativeCoins } from './actions/collect.js';
 import { generateAccounts } from './actions/account.js';
 import { runDistribute } from './actions/distribute.js';
+import { runBalanceExport } from './actions/balance-export.js';
 
 async function main() {
   const args = process.argv.slice(2);
   const action = args[0];
 
   if (!action) {
-    console.error('请指定操作: balance, execute, collect, collect-native, distribute, gen-account');
+    console.error('请指定操作: balance, execute, collect, collect-native, distribute, balance-export, gen-account');
     console.error('用法: node src/index.js <action> [args]');
     process.exit(1);
   }
@@ -79,9 +80,24 @@ async function main() {
       }
       const dryRun = args.includes('--dry-run');
       await runDistribute(config, xlsxPath, rpcClient, logger, { dryRun });
+    } else if (action === 'balance-export') {
+      const inputPath = args[1];
+      if (!inputPath) {
+        console.error('用法: node src/index.js balance-export <输入 xlsx 路径> [输出 xlsx 路径]');
+        console.error('xlsx 格式: 无表头，所有非空单元格视为地址');
+        process.exit(1);
+      }
+      const outputPath = args[2];
+      await runBalanceExport({
+        config,
+        inputPath,
+        outputPath,
+        rpcClient,
+        logger
+      });
     } else {
       console.error(`未知操作: ${action}`);
-      console.error('可用操作: balance, execute, collect, collect-native, distribute, gen-account');
+      console.error('可用操作: balance, execute, collect, collect-native, distribute, balance-export, gen-account');
       process.exit(1);
     }
   } catch (error) {
