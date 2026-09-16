@@ -66,6 +66,13 @@ jest.unstable_mockModule('ethers', () => {
 
 const { extractAddressesFromSheet, runBalanceExport } = await import('../../src/actions/balance-export.js');
 
+// 临时工作目录辅助：把 cwd 切到 tmpDir，避免读到项目根真实的 config/tokens-export.json
+function withCwd(newCwd, fn) {
+  const old = process.cwd();
+  process.chdir(newCwd);
+  return Promise.resolve(fn()).finally(() => process.chdir(old));
+}
+
 describe('extractAddressesFromSheet - 从 xlsx 提取地址', () => {
   let tmpDir;
 
@@ -201,13 +208,13 @@ describe('runBalanceExport - 完整导出流程', () => {
     XLSX.utils.book_append_sheet(wb, sheet, 'Sheet1');
     XLSX.writeFile(wb, inputPath);
 
-    await runBalanceExport({
+    await withCwd(tmpDir, () => runBalanceExport({
       config,
       inputPath,
       outputPath,
       rpcClient: rpc,
       logger
-    });
+    }));
 
     const out = XLSX.readFile(outputPath);
     const rows = XLSX.utils.sheet_to_json(out.Sheets[out.SheetNames[0]], { header: 1 });
@@ -254,7 +261,7 @@ describe('runBalanceExport - 完整导出流程', () => {
     XLSX.writeFile(wb, inputPath);
     const outputPath = path.join(tmpDir, 'out.xlsx');
 
-    await runBalanceExport({ config, inputPath, outputPath, rpcClient: rpc, logger });
+    await withCwd(tmpDir, () => runBalanceExport({ config, inputPath, outputPath, rpcClient: rpc, logger }));
 
     const out = XLSX.readFile(outputPath);
     const rows = XLSX.utils.sheet_to_json(out.Sheets[out.SheetNames[0]], { header: 1 });
@@ -364,13 +371,6 @@ describe('runBalanceExport - 完整导出流程', () => {
   });
 });
 
-// 临时工作目录辅助：把 cwd 切到 tmpDir，便于默认读 config/tokens-export.json
-function withCwd(newCwd, fn) {
-  const old = process.cwd();
-  process.chdir(newCwd);
-  return Promise.resolve(fn()).finally(() => process.chdir(old));
-}
-
 describe('runBalanceExport - 代币列表独立配置', () => {
   let logger;
   let rpc;
@@ -478,5 +478,96 @@ describe('runBalanceExport - 代币列表独立配置', () => {
       tokensPath: path.join(tmpDir, 'missing.json'),
       rpcClient: rpc, logger
     })).rejects.toThrow(/代币列表文件不存在/);
+  });
+});
+
+describe('runBalanceExport - 进度日志', () => {
+  let logger;
+  let rpc;
+  let tmpDir;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'balance-export-progress-'));
+    logger = createMockLogger();
+    rpc = createMockRpc();
+
+    // 构造 120 个地址的输入 xlsx（每行 5 个 = 24 行）
+    const rows = [];
+    for (let i = 0; i < 120; i += 1) {
+      const hex = i.toString(16).padStart(40, '0');
+      rows.push([`0x${hex}`]);
+    }
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, sheet, 'Sheet1');
+    const inputPath = path.join(tmpDir, 'in.xlsx');
+    XLSX.writeFile(wb, inputPath);
+    global.__progressInputPath = inputPath;
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    delete global.__progressInputPath;
+  });
+
+  test('120 个地址时输出 50/100/120 三条进度日志', async () => {
+    const config = {
+      network: { rpcUrl: 'http://localhost:8545', chainId: 1, nativeSymbol: 'ETH' },
+      accounts: [],
+      tokens: [],
+      contracts: {}
+    };
+
+    await runBalanceExport({
+      config,
+      inputPath: global.__progressInputPath,
+      outputPath: path.join(tmpDir, 'out.xlsx'),
+      rpcClient: rpc,
+      logger
+    });
+
+    const progressCalls = logger.info.mock.calls
+      .map(c => c[0])
+      .filter(msg => /进度: \d+\/120 个地址已查询/.test(msg));
+
+    expect(progressCalls).toEqual([
+      '进度: 50/120 个地址已查询',
+      '进度: 100/120 个地址已查询',
+      '进度: 120/120 个地址已查询'
+    ]);
+  });
+
+  test('20 个地址时只输出末尾一条进度日志', async () => {
+    const rows = [];
+    for (let i = 0; i < 20; i += 1) {
+      const hex = i.toString(16).padStart(40, '0');
+      rows.push([`0x${hex}`]);
+    }
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, sheet, 'Sheet1');
+    const inputPath = path.join(tmpDir, 'in.xlsx');
+    XLSX.writeFile(wb, inputPath);
+
+    const config = {
+      network: { rpcUrl: 'http://localhost:8545', chainId: 1, nativeSymbol: 'ETH' },
+      accounts: [],
+      tokens: [],
+      contracts: {}
+    };
+
+    await runBalanceExport({
+      config,
+      inputPath,
+      outputPath: path.join(tmpDir, 'out.xlsx'),
+      rpcClient: rpc,
+      logger
+    });
+
+    const progressCalls = logger.info.mock.calls
+      .map(c => c[0])
+      .filter(msg => /进度: \d+\/20 个地址已查询/.test(msg));
+
+    expect(progressCalls).toEqual(['进度: 20/20 个地址已查询']);
   });
 });

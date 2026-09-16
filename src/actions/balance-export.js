@@ -261,7 +261,12 @@ async function runBalanceExport({ config, inputPath, outputPath, tokensPath, rpc
 
   /** @type {Array<Array<string>>} */
   const dataRows = [];
-  for (const address of addresses) {
+  const totalAddresses = addresses.length;
+  // 进度间隔：最少 50 个，最多不超过总数的 10%
+  const progressInterval = Math.max(50, Math.floor(totalAddresses / 10));
+
+  for (let i = 0; i < totalAddresses; i += 1) {
+    const address = addresses[i];
     /** @type {string[]} */
     const row = [address];
 
@@ -283,6 +288,11 @@ async function runBalanceExport({ config, inputPath, outputPath, tokensPath, rpc
       }
     }
     dataRows.push(row);
+
+    const done = i + 1;
+    if (done === totalAddresses || done % progressInterval === 0) {
+      logger.info(`进度: ${done}/${totalAddresses} 个地址已查询`);
+    }
   }
 
   const finalOutputPath = outputPath || defaultOutputPath();
