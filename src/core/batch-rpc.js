@@ -13,6 +13,8 @@
  * - server 端可能重写 id，与请求 id 不匹配导致结果错位（之前观察到的现象）
  */
 
+import { ethers } from 'ethers';
+
 const DEFAULT_TIMEOUT_MS = 30000;
 const DEFAULT_RETRIES = 3;
 
