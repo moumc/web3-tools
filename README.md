@@ -161,6 +161,33 @@ npm run balance-export -- input.xlsx
 
 # 自定义输出路径
 npm run balance-export -- input.xlsx balances-2026.xlsx
+
+# 用独立的代币列表文件
+npm run balance-export -- input.xlsx --tokens ./my-tokens.json
+```
+
+#### 代币列表配置（balance-export 专用）
+
+balance-export 默认读 **`config/tokens-export.json`**（数组形式，每项 `{ symbol, address, decimals }`）。
+模板见 `config/tokens-export.example.json`：
+
+```json
+[
+  { "symbol": "USDT", "address": "0xdAC17F…", "decimals": 6 },
+  { "symbol": "AIA",  "address": "0xABC123…", "decimals": 18 }
+]
+```
+
+读取优先级：
+
+1. `--tokens <path>` 指定的文件（不存在报错）
+2. 默认 `config/tokens-export.json`（不存在 `warn` 并回退）
+3. 回退到 `config.json` 的 `tokens`（兼容 `name` 字段）
+
+可按需要把真实代币列表加入 `.gitignore`：
+
+```text
+config/tokens-export.json
 ```
 
 #### 输入 xlsx 格式
@@ -182,7 +209,7 @@ npm run balance-export -- input.xlsx balances-2026.xlsx
 - 表头：`[地址, 原生币(SYMBOL), SYMBOL(0xXXXX), …]`
 - 代币列名格式：`<代币符号>(0x<合约地址前 4 字符>)`，例如 `USDT(0xdAC1)`
 - 每个地址占一行；列与表头一一对应
-- **配置没有 `tokens` 时**：仅输出 `地址` 与 `原生币(SYMBOL)` 两列
+- **没有任何代币列表**：仅输出 `地址` 与 `原生币(SYMBOL)` 两列
 - **未配置 `network.nativeSymbol`**：默认 `ETH`
 - **单笔 RPC 查询失败**：对应单元格写入占位符 `--`，其他单元格继续；日志中 `warn` 记录失败原因
 - 输出目录不存在时自动创建

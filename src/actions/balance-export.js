@@ -94,18 +94,87 @@ function extractAddressesFromSheet(filePath) {
 }
 
 /**
+ * 取代币显示符号：独立配置用 `symbol`，全局 config.tokens 用 `name`，都没有时回退 'TOKEN'
+ * @param {Object} info
+ * @returns {string}
+ */
+function getTokenSymbol(info) {
+  return info.symbol || info.name || 'TOKEN';
+}
+
+/**
+ * 把代币配置规范化为数组形式（兼容对象与数组输入）
+ * @param {Array|Object|null|undefined} tokens
+ * @returns {Array<{symbol: string, address: string, decimals: number}>}
+ */
+function normalizeTokens(tokens) {
+  if (!tokens) return [];
+  if (Array.isArray(tokens)) {
+    return tokens.filter(t => t && t.address);
+  }
+  return Object.values(tokens).filter(t => t && t.address);
+}
+
+/**
+ * 从 JSON 文件读取代币列表
+ * @param {string} filePath
+ * @returns {Array}
+ */
+function readTokenListFile(filePath) {
+  const fullPath = path.resolve(filePath);
+  if (!fs.existsSync(fullPath)) {
+    throw new Error(`代币列表文件不存在: ${fullPath}`);
+  }
+  const raw = fs.readFileSync(fullPath, 'utf-8');
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`代币列表 JSON 解析失败: ${error.message}`);
+  }
+  const list = normalizeTokens(parsed);
+  if (list.length === 0) {
+    throw new Error(`代币列表为空或字段缺失: ${fullPath}`);
+  }
+  return list;
+}
+
+/**
+ * 解析代币列表：
+ * 1) --tokens 指定的文件（不存在报错）
+ * 2) 默认 config/tokens-export.json
+ * 3) 回退到 fallbackTokens（来自 config.tokens），并 warn
+ * @param {string|undefined} tokensPath - --tokens 路径
+ * @param {Array|Object|null} fallbackTokens - config.tokens
+ * @param {Object} logger
+ * @returns {Array}
+ */
+function loadTokenList(tokensPath, fallbackTokens, logger) {
+  if (tokensPath) {
+    return readTokenListFile(tokensPath);
+  }
+  const defaultPath = path.resolve('config/tokens-export.json');
+  if (fs.existsSync(defaultPath)) {
+    logger.info(`读取代币列表: ${defaultPath}`);
+    return readTokenListFile(defaultPath);
+  }
+  logger.warn(`config/tokens-export.json 不存在，回退使用 config.tokens`);
+  return normalizeTokens(fallbackTokens);
+}
+
+/**
  * 构建输出 xlsx 的表头
  * @param {string} nativeSymbol - 原生币符号
- * @param {Object} tokens - 代币配置
+ * @param {Array} tokenList - 代币列表（数组形式）
  * @returns {string[]}
  */
-function buildHeader(nativeSymbol, tokens) {
+function buildHeader(nativeSymbol, tokenList) {
   const header = ['地址', `原生币(${nativeSymbol})`];
-  for (const [, info] of Object.entries(tokens || {})) {
-    const name = info.name || 'TOKEN';
+  for (const info of tokenList) {
+    const symbol = getTokenSymbol(info);
     // 取 '0x' + 后续 4 位十六进制字符
     const prefix = info.address.slice(0, 6);
-    header.push(`${name}(${prefix})`);
+    header.push(`${symbol}(${prefix})`);
   }
   return header;
 }
@@ -123,7 +192,7 @@ async function readTokenBalanceCell(rpcClient, address, tokenInfo) {
     const decimals = tokenInfo.decimals ?? 18;
     return ethers.formatUnits(raw, decimals);
   } catch (error) {
-    return { ok: false, error: error.message, tokenName: tokenInfo.name || 'TOKEN' };
+    return { ok: false, error: error.message, tokenName: getTokenSymbol(tokenInfo) };
   }
 }
 
@@ -157,16 +226,17 @@ function defaultOutputPath(cwd = process.cwd()) {
 /**
  * 执行余额导出
  * @param {Object} params
- * @param {Object} params.config - 完整配置（取 network.nativeSymbol 与 tokens）
+ * @param {Object} params.config - 完整配置（取 network.nativeSymbol 与 fallback tokens）
  * @param {string} params.inputPath - 输入 xlsx 路径
  * @param {string} [params.outputPath] - 输出 xlsx 路径，默认 output/balance-<timestamp>.xlsx
+ * @param {string} [params.tokensPath] - --tokens 指定的代币列表文件路径，覆盖默认 config/tokens-export.json
  * @param {Object} params.rpcClient - RPC 客户端
  * @param {Object} params.logger - Logger 实例
  * @returns {Promise<{outputPath: string, addressCount: number, tokenCount: number}>}
  */
-async function runBalanceExport({ config, inputPath, outputPath, rpcClient, logger }) {
+async function runBalanceExport({ config, inputPath, outputPath, tokensPath, rpcClient, logger }) {
   const nativeSymbol = config.network?.nativeSymbol || 'ETH';
-  const tokens = config.tokens || {};
+  const tokenList = loadTokenList(tokensPath, config.tokens, logger);
 
   logger.info(`=== 开始导出余额 ===`);
   logger.info(`输入文件: ${inputPath}`);
@@ -185,10 +255,9 @@ async function runBalanceExport({ config, inputPath, outputPath, rpcClient, logg
     throw new Error('没有有效地址可查询');
   }
 
-  const header = buildHeader(nativeSymbol, tokens);
-  const tokenEntries = Object.entries(tokens);
+  const header = buildHeader(nativeSymbol, tokenList);
 
-  logger.info(`开始查询余额: ${addresses.length} 个地址 × (1 原生币 + ${tokenEntries.length} 个 ERC20) = ${addresses.length * (1 + tokenEntries.length)} 次调用`);
+  logger.info(`开始查询余额: ${addresses.length} 个地址 × (1 原生币 + ${tokenList.length} 个 ERC20) = ${addresses.length * (1 + tokenList.length)} 次调用`);
 
   /** @type {Array<Array<string>>} */
   const dataRows = [];
@@ -204,7 +273,7 @@ async function runBalanceExport({ config, inputPath, outputPath, rpcClient, logg
       row.push(PLACEHOLDER);
     }
 
-    for (const [, info] of tokenEntries) {
+    for (const info of tokenList) {
       const cell = await readTokenBalanceCell(rpcClient, address, info);
       if (typeof cell === 'string') {
         row.push(cell);
@@ -232,8 +301,17 @@ async function runBalanceExport({ config, inputPath, outputPath, rpcClient, logg
   return {
     outputPath: finalOutputPath,
     addressCount: dataRows.length,
-    tokenCount: tokenEntries.length
+    tokenCount: tokenList.length
   };
 }
 
-export { extractAddressesFromSheet, buildHeader, defaultOutputPath, runBalanceExport };
+export {
+  extractAddressesFromSheet,
+  buildHeader,
+  defaultOutputPath,
+  getTokenSymbol,
+  loadTokenList,
+  normalizeTokens,
+  readTokenListFile,
+  runBalanceExport
+};

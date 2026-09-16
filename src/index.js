@@ -83,15 +83,24 @@ async function main() {
     } else if (action === 'balance-export') {
       const inputPath = args[1];
       if (!inputPath) {
-        console.error('用法: node src/index.js balance-export <输入 xlsx 路径> [输出 xlsx 路径]');
+        console.error('用法: node src/index.js balance-export <输入 xlsx 路径> [输出 xlsx 路径] [--tokens <代币列表>]');
         console.error('xlsx 格式: 无表头，所有非空单元格视为地址');
         process.exit(1);
       }
-      const outputPath = args[2];
+      let outputPath;
+      let tokensPath;
+      for (let i = 2; i < args.length; i += 1) {
+        if (args[i] === '--tokens') {
+          tokensPath = args[++i];
+        } else if (!outputPath) {
+          outputPath = args[i];
+        }
+      }
       await runBalanceExport({
         config,
         inputPath,
         outputPath,
+        tokensPath,
         rpcClient,
         logger
       });

@@ -363,3 +363,120 @@ describe('runBalanceExport - 完整导出流程', () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('无效'));
   });
 });
+
+// 临时工作目录辅助：把 cwd 切到 tmpDir，便于默认读 config/tokens-export.json
+function withCwd(newCwd, fn) {
+  const old = process.cwd();
+  process.chdir(newCwd);
+  return Promise.resolve(fn()).finally(() => process.chdir(old));
+}
+
+describe('runBalanceExport - 代币列表独立配置', () => {
+  let logger;
+  let rpc;
+  let tmpDir;
+  let inputPath;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'balance-export-tokens-'));
+    logger = createMockLogger();
+    rpc = createMockRpc();
+
+    // 在 tmpDir 写一个最小的输入 xlsx
+    const sheet = XLSX.utils.aoa_to_sheet([[ADDR_A]]);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, sheet, 'Sheet1');
+    inputPath = path.join(tmpDir, 'in.xlsx');
+    XLSX.writeFile(wb, inputPath);
+
+    // 子目录 config 用于放独立配置
+    fs.mkdirSync(path.join(tmpDir, 'config'), { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('默认读 config/tokens-export.json（symbol 字段），写出 USDT/AIA 列', async () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'config/tokens-export.json'),
+      JSON.stringify([
+        { symbol: 'USDT', address: USDT_ADDRESS, decimals: 6 },
+        { symbol: 'AIA',  address: AIA_ADDRESS,  decimals: 18 }
+      ])
+    );
+
+    const config = {
+      network: { rpcUrl: 'http://localhost:8545', chainId: 1, nativeSymbol: 'ETH' },
+      accounts: [],
+      // 故意与独立文件不一致；不应影响结果
+      tokens: { usdt: { address: USDT_ADDRESS, name: 'WRONG', decimals: 6 } },
+      contracts: {}
+    };
+
+    const outputPath = path.join(tmpDir, 'out.xlsx');
+    await withCwd(tmpDir, () => runBalanceExport({
+      config, inputPath, outputPath, rpcClient: rpc, logger
+    }));
+
+    const rows = XLSX.utils.sheet_to_json(XLSX.readFile(outputPath).Sheets.Sheet1, { header: 1 });
+    expect(rows[0]).toEqual(['地址', '原生币(ETH)', 'USDT(0xdAC1)', 'AIA(0xABC1)']);
+  });
+
+  test('config/tokens-export.json 不存在时回退到 config.tokens（name 字段兼容）', async () => {
+    // 不写 tokens-export.json；config.tokens 用 name 字段
+    const config = {
+      network: { rpcUrl: 'http://localhost:8545', chainId: 1, nativeSymbol: 'ETH' },
+      accounts: [],
+      tokens: { usdt: { address: USDT_ADDRESS, name: 'USDT', decimals: 6 } },
+      contracts: {}
+    };
+
+    const outputPath = path.join(tmpDir, 'out.xlsx');
+    await withCwd(tmpDir, () => runBalanceExport({
+      config, inputPath, outputPath, rpcClient: rpc, logger
+    }));
+
+    const rows = XLSX.utils.sheet_to_json(XLSX.readFile(outputPath).Sheets.Sheet1, { header: 1 });
+    expect(rows[0]).toEqual(['地址', '原生币(ETH)', 'USDT(0xdAC1)']);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('config/tokens-export.json 不存在'));
+  });
+
+  test('--tokens 覆盖路径，读取自定义文件', async () => {
+    const customPath = path.join(tmpDir, 'my-tokens.json');
+    fs.writeFileSync(customPath, JSON.stringify([
+      { symbol: 'CUSTOM', address: USDT_ADDRESS, decimals: 6 }
+    ]));
+
+    // config.tokens 故意有别的代币；应被覆盖
+    const config = {
+      network: { rpcUrl: 'http://localhost:8545', chainId: 1, nativeSymbol: 'ETH' },
+      accounts: [],
+      tokens: { usdt: { address: USDT_ADDRESS, name: 'USDT', decimals: 6 } },
+      contracts: {}
+    };
+
+    const outputPath = path.join(tmpDir, 'out.xlsx');
+    await runBalanceExport({
+      config, inputPath, outputPath, tokensPath: customPath, rpcClient: rpc, logger
+    });
+
+    const rows = XLSX.utils.sheet_to_json(XLSX.readFile(outputPath).Sheets.Sheet1, { header: 1 });
+    expect(rows[0]).toEqual(['地址', '原生币(ETH)', 'CUSTOM(0xdAC1)']);
+  });
+
+  test('--tokens 指定的文件不存在时抛错', async () => {
+    const config = {
+      network: { rpcUrl: 'http://localhost:8545', chainId: 1, nativeSymbol: 'ETH' },
+      accounts: [],
+      tokens: {},
+      contracts: {}
+    };
+
+    await expect(runBalanceExport({
+      config, inputPath, outputPath: path.join(tmpDir, 'o.xlsx'),
+      tokensPath: path.join(tmpDir, 'missing.json'),
+      rpcClient: rpc, logger
+    })).rejects.toThrow(/代币列表文件不存在/);
+  });
+});
