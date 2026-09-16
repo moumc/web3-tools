@@ -11,6 +11,7 @@
 | `collect` | 批量归集多个账户的 ERC20 代币到目标地址 | 是 |
 | `collect-native` | 批量归集多个账户的原生币到目标地址 | 是 |
 | `distribute` | 从单一发送方向 xlsx 收款表批量分发原生币 | 是 |
+| `balance-export` | 从 xlsx 批量读取地址，从链上拉余额并导出为新 xlsx | 否（只读） |
 | `gen-account` | 本地生成以太坊地址与私钥（带三层防御校验） | 否（完全离线） |
 
 ## 安装
@@ -148,6 +149,55 @@ npm run distribute -- list.xlsx
   successCount: number,
   failedCount: number
 }
+```
+
+### 批量导出余额（balance-export）
+
+从 xlsx 表格读取所有地址，遍历配置好的原生币 + 每个 ERC20 代币，从链上读取余额并写回新 xlsx 表。
+
+```bash
+# 输入必填；输出路径缺省时写到 output/balance-<ISO 时间戳>.xlsx
+npm run balance-export -- input.xlsx
+
+# 自定义输出路径
+npm run balance-export -- input.xlsx balances-2026.xlsx
+```
+
+#### 输入 xlsx 格式
+
+- **无表头**；每一行可以有任意多列
+- **所有非空单元格**均视为地址候选；自动展平读取
+- 无效地址（如错别字、非 0x 开头）跳过并 `warn`，不影响其他地址
+- 重复地址（checksum 不区分大小写）仅查询一次并 `warn`，输出表只保留一行
+
+示例（多列无表头）：
+
+| | | |
+|---|---|---|
+| `0x111…111` | `0x222…222` | `0x333…333` |
+| `0x444…444` | | |
+
+#### 输出 xlsx 格式
+
+- 表头：`[地址, 原生币(SYMBOL), SYMBOL(0xXXXX), …]`
+- 代币列名格式：`<代币符号>(0x<合约地址前 4 字符>)`，例如 `USDT(0xdAC1)`
+- 每个地址占一行；列与表头一一对应
+- **配置没有 `tokens` 时**：仅输出 `地址` 与 `原生币(SYMBOL)` 两列
+- **未配置 `network.nativeSymbol`**：默认 `ETH`
+- **单笔 RPC 查询失败**：对应单元格写入占位符 `--`，其他单元格继续；日志中 `warn` 记录失败原因
+- 输出目录不存在时自动创建
+
+#### 行为日志示例
+
+```
+=== 开始导出余额 ===
+输入文件: ./addresses.xlsx
+读取统计: 共 248 个非空单元格，去重后有效地址 235 个
+第 12 行 第 3 列跳过: 地址无效 (0xnot-an-address)
+第 18 行 第 2 列重复地址: 0x111…111（仅查询一次）
+开始查询余额: 235 个地址 × (1 原生币 + 2 个 ERC20) = 705 次调用
+[0x222…] USDT 查询失败: RPC timeout
+=== 导出完成 === 输出: ./output/balance-2026-07-08T12-40-57-659Z.xlsx（235 行 × 4 列）
 ```
 
 ### 生成账户（gen-account）
