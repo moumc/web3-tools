@@ -455,10 +455,11 @@ async function runBalanceExport({
     const tokenResults = results.slice(batchAddresses.length);
     const tokenByAddr = indexTokenResultsByAddress(tokenResults, batchAddresses, tokenList);
 
-    // 6.4 构造 UPDATE 行：原生币 ok → 写值；否则 NULL
+    // 6.4 构造 UPDATE 行：原生币 ok → 转十进制 ETH 单位；否则 NULL
     const updateRows = batchAddresses.map((addr, i) => {
       const nativeR = nativeResults[i];
-      const nativeBalance = nativeR && nativeR.ok ? nativeR.result : null;
+      // RPC 返回的是 hex wei；DECIMAL 列需要十进制字符串。18 位精度（EVM 原生币标准）
+      const nativeBalance = nativeR && nativeR.ok ? formatBalance(nativeR.result, 18) : null;
       const balances = tokenByAddr.get(addr) || {};
       return { address: addr, nativeBalance, balances };
     });

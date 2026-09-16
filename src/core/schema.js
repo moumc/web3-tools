@@ -203,32 +203,23 @@ function buildUpdateBalancesSql(sessionId, tokens, rows) {
   }
   const tableName = tableNameFor(sessionId);
 
+  // 用单行紧凑拼接：MySQL 9 在 SET 子句跨行 + 多 CASE WHEN 时解析异常
   const setClauses = [];
 
   // native_balance
-  setClauses.push('  `native_balance` = CASE `address`');
-  for (const r of rows) {
-    setClauses.push('    WHEN ? THEN ?');
-  }
-  setClauses.push('  END');
+  const nativeCases = rows.map(() => 'WHEN ? THEN ?').join(' ');
+  setClauses.push(`\`native_balance\` = CASE \`address\` ${nativeCases} END`);
 
   // 每个代币一列
   for (const t of tokens) {
     const col = getTokenColumnName(t);
-    setClauses.push(`  \`${col}\` = CASE \`address\``);
-    for (const r of rows) {
-      setClauses.push('    WHEN ? THEN ?');
-    }
-    setClauses.push('  END');
+    const cases = rows.map(() => 'WHEN ? THEN ?').join(' ');
+    setClauses.push(`\`${col}\` = CASE \`address\` ${cases} END`);
   }
 
-  const placeholders = rows.map(() => '?').join(', ');
+  const placeholders = rows.map(() => '?').join(',');
 
-  return [
-    `UPDATE \`${tableName}\` SET`,
-    setClauses.join(',\n'),
-    `WHERE \`address\` IN (${placeholders});`
-  ].join('\n');
+  return `UPDATE \`${tableName}\` SET ${setClauses.join(',')} WHERE \`address\` IN(${placeholders});`;
 }
 
 /**
