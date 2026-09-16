@@ -280,25 +280,25 @@ function calcProgressInterval(total) {
 
 /**
  * 把代币余额结果按 address 聚合
+ * 顺序必须与构造 RPC calls 一致（token-major）：
+ *   for token: for addr → 索引 0..N*T-1 是 t1.a1, t1.a2, ..., t2.a1, t2.a2, ...
  * @param {Array} tokenResults - batchRpcCall 返回（按 input id 顺序）
  * @param {Array<string>} addressesInOrder
  * @param {Array<Object>} tokens
  * @returns {Map<string, Object<string,string|null>>} 每地址一个对象，key 为列名（不是 symbol）
  */
 function indexTokenResultsByAddress(tokenResults, addressesInOrder, tokens) {
-  // tokenResults 与构造的 calls 顺序一致：先 addressesInOrder × tokens (row-major)
   const out = new Map();
   for (const addr of addressesInOrder) {
     out.set(addr, {});
   }
   let idx = 0;
-  for (const addr of addressesInOrder) {
-    const bag = out.get(addr);
-    for (const t of tokens) {
+  for (const t of tokens) {
+    const col = getTokenColumnName(t);
+    for (const addr of addressesInOrder) {
       const r = tokenResults[idx];
       idx += 1;
-      // 用列名作 key，避免 symbol 重复时撞 key
-      const col = getTokenColumnName(t);
+      const bag = out.get(addr);
       if (r && r.ok) {
         bag[col] = formatBalance(r.result, t.decimals);
       } else {
