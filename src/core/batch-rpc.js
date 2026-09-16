@@ -160,7 +160,7 @@ async function batchRpcCall({
 
     if (typeof onProgress === 'function') {
       try {
-        onProgress(c, i);
+        onProgress(c, i, out[out.length - 1]);
       } catch (_) {
         // 回调异常不影响主流程
       }

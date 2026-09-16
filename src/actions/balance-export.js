@@ -451,9 +451,8 @@ async function runBalanceExport({
       calls,
       retries: maxRpcRetries,
       timeoutMs: 30000,
-      onProgress: (call, idx) => {
+      onProgress: (call, idx, r) => {
         doneCount += 1;
-        // 这里拿不到 ok/error（进度回调没有结果），所以仅递增计数，最后统计用
         if ((idx + 1) % 50 === 0 || idx === calls.length - 1) {
           const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
           const rate = (doneCount / parseFloat(elapsed || '1')).toFixed(1);
