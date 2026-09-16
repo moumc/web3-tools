@@ -512,8 +512,8 @@ describe('runBalanceExport - MySQL 模式', () => {
 
     const row = pool._getRow(ethersModule.getAddress(ADDR_A));
     expect(row.status).toBe('done');
-    expect(row.usdt_balance).toBeNull();
-    expect(row.aia_balance).not.toBeNull();
+    expect(row.usdt_dac1_balance).toBeNull();
+    expect(row.aia_abc1_balance).not.toBeNull();
     expect(row.native_balance).not.toBeNull();
     expect(result.doneCount).toBe(1);
     expect(result.failedCount).toBe(0); // 部分失败仍算 done
@@ -649,7 +649,7 @@ describe('runBalanceExport - MySQL 模式', () => {
 
     const createSql = pool._executed.find(e => e.sql.trim().toUpperCase().startsWith('CREATE TABLE')).sql;
     expect(createSql).toMatch(/native_balance/);
-    expect(createSql).not.toMatch(/(usdt|aia)_balance/);
+    expect(createSql).not.toMatch(/(usdt|aia)_\w{4}_balance/);
 
     // rpcBatchCall 只调用了一次，全部 eth_getBalance（按地址）
     const allCalls = rpcBatchCall.mock.calls.flatMap(c => c[0].calls);
@@ -735,7 +735,106 @@ describe('runBalanceExport - MySQL 模式', () => {
     });
 
     const createSql = pool._executed.find(e => e.sql.trim().toUpperCase().startsWith('CREATE TABLE')).sql;
-    expect(createSql).toMatch(/custom_balance/);
-    expect(createSql).not.toMatch(/aia_balance/);
+    expect(createSql).toMatch(/custom_dac1_balance/);
+    expect(createSql).not.toMatch(/aia_\w{4}_balance/);
+  });
+
+  test('重复 symbol 不同 address：生成不同列名，两列都正常写入', async () => {
+    const USDT2_ADDRESS = '0x0000000000000000000000000000000000012345'; // 另一个 USDT（同 symbol）
+    const inputPath = writeInputXlsx(tmpDir, [[ADDR_A]]);
+    const pool = makeFakePoolV2({
+      updateResolver: ({ colMap, status, hasErrorMsg, params }) => {
+        const r = parseCaseUpdateParams({ colMap, hasErrorMsg, params });
+        for (const [addr, vals] of Object.entries(r.byAddr)) {
+          const row = pool._getRow(addr);
+          if (row) {
+            for (const [k, v] of Object.entries(vals)) row[k] = v;
+            row.status = status;
+          }
+        }
+      }
+    });
+
+    // USDT 和 USDT2 区分开
+    const usdt1Checksum = ethersModule.getAddress(USDT_ADDRESS).toLowerCase();
+    const usdt2Checksum = ethersModule.getAddress(USDT2_ADDRESS).toLowerCase();
+    const rpcBatchCall = jest.fn(async ({ calls }) => {
+      return calls.map(c => {
+        if (c.method === 'eth_getBalance') return { id: c.id, ok: true, result: UNIT_18.toString() };
+        const calldata = c.params[0]?.data?.toLowerCase();
+        if (c.method === 'eth_call' && calldata === '0x70a08231' + '0'.repeat(24) + usdt1Checksum.slice(2)) {
+          return { id: c.id, ok: true, result: '0x' + BigInt(111 * Number(UNIT_18)).toString(16).padStart(64, '0') };
+        }
+        if (c.method === 'eth_call' && calldata === '0x70a08231' + '0'.repeat(24) + usdt2Checksum.slice(2)) {
+          return { id: c.id, ok: true, result: '0x' + BigInt(222 * Number(UNIT_18)).toString(16).padStart(64, '0') };
+        }
+        return { id: c.id, ok: false, error: 'unknown' };
+      });
+    });
+
+    await runBalanceExport({
+      config: makeConfig(),
+      inputPath,
+      pool,
+      rpcBatchCall,
+      logger,
+      tokens: [
+        { symbol: 'USDT', address: USDT_ADDRESS,  decimals: 6 }, // column usdt_dac1_balance
+        { symbol: 'USDT', address: USDT2_ADDRESS, decimals: 6 }  // column usdt_4f23_balance
+      ],
+      sessionId: 'sdup'
+    });
+
+    // CREATE TABLE 必须同时包含两列
+    const createSql = pool._executed.find(e => e.sql.trim().toUpperCase().startsWith('CREATE TABLE')).sql;
+    expect(createSql).toMatch(/`usdt_dac1_balance`/);
+    expect(createSql).toMatch(/`usdt_0000_balance`/);
+
+    // UPDATE 写入两列
+    const row = pool._getRow(ethersModule.getAddress(ADDR_A));
+    expect(row.usdt_dac1_balance).not.toBeNull(); // 111
+    expect(row.usdt_0000_balance).not.toBeNull(); // 222
+    expect(row.status).toBe('done');
+  });
+
+  test('同 symbol + 同 address（配置文件中重复条目）：后者被跳过并 warn', async () => {
+    const inputPath = writeInputXlsx(tmpDir, [[ADDR_A]]);
+    const pool = makeFakePoolV2({
+      updateResolver: ({ colMap, status, hasErrorMsg, params }) => {
+        const r = parseCaseUpdateParams({ colMap, hasErrorMsg, params });
+        for (const [addr, vals] of Object.entries(r.byAddr)) {
+          const row = pool._getRow(addr);
+          if (row) {
+            for (const [k, v] of Object.entries(vals)) row[k] = v;
+            row.status = status;
+          }
+        }
+      }
+    });
+    const rpcBatchCall = jest.fn(async ({ calls }) =>
+      calls.map(c => ({ id: c.id, ok: true, result: '0x0' }))
+    );
+
+    await runBalanceExport({
+      config: makeConfig(),
+      inputPath,
+      pool,
+      rpcBatchCall,
+      logger,
+      tokens: [
+        { symbol: 'USDT', address: USDT_ADDRESS, decimals: 6 },
+        { symbol: 'USDTDUP', address: USDT_ADDRESS, decimals: 6 } // 同地址，只保留首个
+      ],
+      sessionId: 'sdup2'
+    });
+
+    // 只有一列 usdt_dac1_balance（重复条目已去重）
+    const createSql = pool._executed.find(e => e.sql.trim().toUpperCase().startsWith('CREATE TABLE')).sql;
+    expect(createSql).toMatch(/`usdt_dac1_balance`/);
+    expect(createSql).not.toMatch(/usdtdup_/);
+
+    // sanitizeTokens 应有 warn
+    const warns = logger.warn.mock.calls.map(c => c[0]).filter(m => /重复/.test(m));
+    expect(warns.length).toBeGreaterThan(0);
   });
 });

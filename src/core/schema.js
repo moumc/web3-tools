@@ -74,27 +74,35 @@ function tableNameFor(sessionId) {
 
 /**
  * 根据 token 元数据计算列名
- * - symbol 转小写
- * - 仅保留 [a-z0-9_]
- * - 追加 `_balance` 后缀
- * - 再次校验安全
- * @param {{symbol: string, decimals: number}} token
- * @returns {string} 列名（如 `usdt_balance`）
+ * - symbol 转小写，仅保留 [a-z0-9_]
+ * - address 取 0x 后前 4 位 hex（避免 symbol 重复时撞列名）
+ * - 格式：`<symbol>_<addr4hex>_balance`
+ * - 再次校验标识符安全 + 长度
+ * @param {{symbol: string, address: string, decimals: number}} token
+ * @returns {string} 列名（如 `usdt_dac1_balance`）
  */
 function getTokenColumnName(token) {
   if (!token || typeof token.symbol !== 'string') {
     throw new Error('token.symbol 必填');
   }
-  const base = token.symbol.toLowerCase().replace(/[^a-z0-9_]/g, '');
-  if (base.length === 0) {
+  if (typeof token.address !== 'string'
+      || !/^0x[0-9a-fA-F]{40}$/.test(token.address)) {
+    throw new Error(`token.address 必须为 0x + 40 位 hex: ${token && token.address}`);
+  }
+  const symBase = token.symbol.toLowerCase().replace(/[^a-z0-9_]/g, '');
+  if (symBase.length === 0) {
     throw new Error(`token.symbol 清洗后为空: ${JSON.stringify(token.symbol)}`);
   }
-  if (SQL_KEYWORDS.has(base)) {
-    throw new Error(`token.symbol 与 SQL 关键字冲突: ${base}`);
+  if (SQL_KEYWORDS.has(symBase)) {
+    throw new Error(`token.symbol 与 SQL 关键字冲突: ${symBase}`);
   }
-  const col = `${base}_balance`;
+  const addr4 = token.address.slice(2, 6).toLowerCase();
+  const col = `${symBase}_${addr4}_balance`;
   if (!isValidIdentifier(col)) {
     throw new Error(`列名非法或与关键字冲突: ${col}`);
+  }
+  if (col.length > MAX_IDENTIFIER_LEN) {
+    throw new Error(`列名过长: ${col} (${col.length} > ${MAX_IDENTIFIER_LEN})`);
   }
   return col;
 }
@@ -234,6 +242,8 @@ function buildUpdateBalancesSql(sessionId, tokens, rows, opts = {}) {
  *   2. native_balance: [addr1, val1, addr2, val2, ...]
  *   3. 每个代币列: [addr1, val1, addr2, val2, ...]
  *   4. WHERE IN: [addr1, addr2, ...]
+ * 注意：rows[].balances 的 key 用列名（getTokenColumnName(t)）而非 symbol，
+ * 因为同一 symbol 对应不同 address 时会产生多个列。
  * @param {Array} rows
  * @param {Array} tokens
  * @param {Object} opts
@@ -248,9 +258,9 @@ function buildUpdateBalancesParams(rows, tokens, opts = {}) {
     params.push(r.address, r.nativeBalance);
   }
   for (const t of tokens) {
-    const sym = t.symbol;
+    const col = getTokenColumnName(t);
     for (const r of rows) {
-      const v = r.balances && sym in r.balances ? r.balances[sym] : null;
+      const v = r.balances && col in r.balances ? r.balances[col] : null;
       params.push(r.address, v);
     }
   }

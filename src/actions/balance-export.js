@@ -184,35 +184,48 @@ function loadTokenList(tokensPath, fallbackTokens, logger) {
     }
   }
   // 校验每个 token 的 address 必须是合法以太坊地址；否则跳过并 warn
+  // 同时按 address 去重（同地址只保留首次出现）
   const valid = [];
+  const seen = new Set();
   for (const t of raw) {
     if (!t.address || !ethers.isAddress(t.address)) {
       logger.warn(`代币 ${t.symbol || '(未知)'} 的合约地址无效: ${t.address}，已跳过`);
       continue;
     }
-    valid.push({
-      ...t,
-      // 统一 checksum 化
-      address: ethers.getAddress(t.address)
-    });
+    const checksum = ethers.getAddress(t.address);
+    if (seen.has(checksum.toLowerCase())) {
+      logger.warn(`代币地址重复: ${checksum} (symbol=${t.symbol || '(未知)'})，已跳过`);
+      continue;
+    }
+    seen.add(checksum.toLowerCase());
+    valid.push({ ...t, address: checksum });
   }
   return valid;
 }
 
 /**
- * 校验并 checksum 化代币列表，过滤无效地址
+ * 校验并 checksum 化代币列表，过滤无效地址；按 address 去重（同地址只保留首次出现）
+ * - 过滤：address 非法 → warn 并跳过
+ * - 去重：同 address（checksum 后）→ warn 并跳过；因为同地址 = 同代币 = 同列，二次出现要么是用户误配
  * @param {Array} tokens
  * @param {Object} logger
  * @returns {Array}
  */
 function sanitizeTokens(tokens, logger) {
   const valid = [];
+  const seen = new Set();
   for (const t of tokens) {
     if (!t || !t.address || !ethers.isAddress(t.address)) {
       logger.warn(`代币 ${(t && t.symbol) || '(未知)'} 的合约地址无效: ${t && t.address}，已跳过`);
       continue;
     }
-    valid.push({ ...t, address: ethers.getAddress(t.address) });
+    const checksum = ethers.getAddress(t.address);
+    if (seen.has(checksum.toLowerCase())) {
+      logger.warn(`代币地址重复: ${checksum} (symbol=${t.symbol || '(未知)'})，已跳过`);
+      continue;
+    }
+    seen.add(checksum.toLowerCase());
+    valid.push({ ...t, address: checksum });
   }
   return valid;
 }
@@ -272,7 +285,7 @@ function calcProgressInterval(total) {
  * @param {Array} tokenResults - batchRpcCall 返回（按 input id 顺序）
  * @param {Array<string>} addressesInOrder
  * @param {Array<Object>} tokens
- * @returns {Map<string, Object<string,string|null>>}
+ * @returns {Map<string, Object<string,string|null>>} 每地址一个对象，key 为列名（不是 symbol）
  */
 function indexTokenResultsByAddress(tokenResults, addressesInOrder, tokens) {
   // tokenResults 与构造的 calls 顺序一致：先 addressesInOrder × tokens (row-major)
@@ -286,11 +299,12 @@ function indexTokenResultsByAddress(tokenResults, addressesInOrder, tokens) {
     for (const t of tokens) {
       const r = tokenResults[idx];
       idx += 1;
-      const sym = getTokenSymbol(t);
+      // 用列名作 key，避免 symbol 重复时撞 key
+      const col = getTokenColumnName(t);
       if (r && r.ok) {
-        bag[sym] = formatBalance(r.result, t.decimals);
+        bag[col] = formatBalance(r.result, t.decimals);
       } else {
-        bag[sym] = null;
+        bag[col] = null;
       }
     }
   }
@@ -433,7 +447,7 @@ async function runBalanceExport({
       const failedRows = batchAddresses.map(addr => ({
         address: addr,
         nativeBalance: null,
-        balances: Object.fromEntries(tokenList.map(t => [getTokenSymbol(t), null]))
+        balances: Object.fromEntries(tokenList.map(t => [getTokenColumnName(t), null]))
       }));
       const updateSql = buildUpdateBalancesSql(sid, tokenList, failedRows,
         { status: 'failed', errorMsg: err.message });
@@ -492,7 +506,7 @@ async function runBalanceExport({
       const rowsToUpdate = failedRows.map(r => ({
         address: r.address,
         nativeBalance: null,
-        balances: Object.fromEntries(tokenList.map(t => [getTokenSymbol(t), null]))
+        balances: Object.fromEntries(tokenList.map(t => [getTokenColumnName(t), null]))
       }));
       const errMsg = failedRows[0]._allFailed
         ? (() => {

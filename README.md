@@ -199,7 +199,7 @@ balance_export_<sessionId>
 | `id` | `BIGINT PK AUTO_INCREMENT` | 行号 |
 | `address` | `VARCHAR(42) UNIQUE NOT NULL` | checksum 地址 |
 | `native_balance` | `DECIMAL(38,0)` | 原生币最小单位（`wei` / 最小位） |
-| `<symbol>_balance` | `DECIMAL(38,0)` | 每个代币一列（列名由 `getTokenSymbol` 派生，全部小写 + 非字母数字转 `_`） |
+| `<symbol>_<addr4hex>_balance` | `DECIMAL(38,0)` | 每个代币一列（列名 = `<symbol 小写 + 仅 [a-z0-9_]>_<地址前 4 位 hex 小写>_balance`，例如 `usdt_dac1_balance`） |
 | `status` | `ENUM('pending','done','failed')` | 导出状态（用于断点续跑） |
 | `error_msg` | `VARCHAR(255) NULL` | 单次批次失败原因 |
 | `created_at` | `DATETIME DEFAULT CURRENT_TIMESTAMP` | — |
@@ -224,7 +224,7 @@ balance-export 默认读 **`config/tokens-export.json`**（数组形式，每项
 2. 默认 `config/tokens-export.json`（不存在 `warn` 并回退）
 3. 回退到 `config.json` 的 `tokens`（兼容 `name` 字段）
 
-无效地址（非 `ethers.isAddress`）自动跳过并 `warn`；重复符号按最后出现的覆盖；空代币列表也能跑（只查原生币）。
+无效地址（非 `ethers.isAddress`）自动跳过并 `warn`；**同 symbol 不同 address** 会生成不同列（列名带地址前 4 位 hex 区分，例如 `usdt_dac1_balance` 与 `usdt_4f23_balance`），两列都会被查询并写入；**同 address 重复出现**会跳过第二次并 `warn`（同地址 = 同代币 = 同列）；空代币列表也能跑（只查原生币）。
 
 #### 4. 命令
 
@@ -300,8 +300,8 @@ npm run balance-export -- input.xlsx --batch-size 200
 ```sql
 SELECT address,
        native_balance,
-       usdt_balance,
-       aia_balance,
+       usdt_dac1_balance,
+       aia_abc1_balance,
        status,
        error_msg,
        updated_at
@@ -309,13 +309,15 @@ FROM balance_export_20260916_124057
 ORDER BY id;
 ```
 
+> 列名包含地址前 4 位 hex 是为了在 symbol 重复时仍能区分不同代币（例如两个 USDT 不同合约）。
+
 如需按人读单位展示：
 
 ```sql
 SELECT address,
        native_balance / 1e18 AS native_eth,
-       usdt_balance    / 1e6  AS usdt,
-       aia_balance     / 1e18 AS aia,
+       usdt_dac1_balance / 1e6 AS usdt,
+       aia_abc1_balance / 1e18 AS aia,
        status
 FROM balance_export_20260916_124057;
 ```
@@ -433,7 +435,7 @@ npm test
 - 所有合约 / 归集 / 分发交易都先 `estimateGas` 预检，明显会回滚的交易不会浪费 Gas
 - `distribute` 在发第一笔前预检余额（含 Gas 预留），整体不足时一笔不发，避免半完成状态
 - `balance-export` 写入 MySQL 的所有 SQL 均使用预编译参数（防注入）；表名 / 列名均通过关键字黑名单 + 长度 + 字符白名单校验
-- 表 / 列名含 token symbol 时会被规整为 `[a-z0-9_]+`，并强制加 `_balance` 后缀；`drop` 等关键字会被拒绝
+- 表 / 列名含 token symbol 时会被规整为 `<symbol>_<addr4hex>_balance`，symbol 部分小写 + 非字母数字替换为 `_` + 关键字黑名单；`drop` 等关键字会被拒绝
 
 ## 开发提示
 

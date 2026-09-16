@@ -79,25 +79,42 @@ describe('core/schema', () => {
   });
 
   describe('getTokenColumnName', () => {
-    test('lowercases symbol and appends _balance', () => {
-      expect(getTokenColumnName({ symbol: 'USDT', decimals: 6 })).toBe('usdt_balance');
-      expect(getTokenColumnName({ symbol: 'aia', decimals: 18 })).toBe('aia_balance');
+    test('列名格式：<symbol>_<地址前4位>_balance', () => {
+      expect(getTokenColumnName({ symbol: 'USDT', address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 6 }))
+        .toBe('usdt_dac1_balance');
+      expect(getTokenColumnName({ symbol: 'aia', address: '0xABC1230000000000000000000000000000000000', decimals: 18 }))
+        .toBe('aia_abc1_balance');
     });
 
     test('strips non-identifier characters from symbol', () => {
-      expect(getTokenColumnName({ symbol: 'USDT-A', decimals: 6 })).toBe('usdta_balance');
-      expect(getTokenColumnName({ symbol: 'My Token', decimals: 18 })).toBe('mytoken_balance');
-      expect(getTokenColumnName({ symbol: 'foo.bar', decimals: 18 })).toBe('foobar_balance');
+      expect(getTokenColumnName({ symbol: 'USDT-A', address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 6 }))
+        .toBe('usdta_dac1_balance');
+      expect(getTokenColumnName({ symbol: 'My Token', address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 18 }))
+        .toBe('mytoken_dac1_balance');
+      expect(getTokenColumnName({ symbol: 'foo.bar', address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 18 }))
+        .toBe('foobar_dac1_balance');
+    });
+
+    test('duplicate symbol with different addresses → different columns', () => {
+      const a = { symbol: 'USDT', address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 6 };
+      const b = { symbol: 'USDT', address: '0x0000000000000000000000000000000000012345', decimals: 6 };
+      expect(getTokenColumnName(a)).not.toBe(getTokenColumnName(b));
+    });
+
+    test('throws when address is missing or malformed', () => {
+      expect(() => getTokenColumnName({ symbol: 'USDT', decimals: 6 })).toThrow(/address/);
+      expect(() => getTokenColumnName({ symbol: 'USDT', address: '0xshort', decimals: 6 })).toThrow(/address/);
+      expect(() => getTokenColumnName({ symbol: 'USDT', address: 'not-an-address', decimals: 6 })).toThrow(/address/);
     });
 
     test('throws on symbol that becomes empty after sanitization', () => {
-      expect(() => getTokenColumnName({ symbol: '---', decimals: 18 })).toThrow();
-      expect(() => getTokenColumnName({ symbol: '', decimals: 18 })).toThrow();
+      expect(() => getTokenColumnName({ symbol: '---', address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 18 })).toThrow();
+      expect(() => getTokenColumnName({ symbol: '', address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 18 })).toThrow();
     });
 
     test('throws on reserved keyword symbol', () => {
-      expect(() => getTokenColumnName({ symbol: 'drop', decimals: 18 })).toThrow();
-      expect(() => getTokenColumnName({ symbol: 'SELECT', decimals: 18 })).toThrow();
+      expect(() => getTokenColumnName({ symbol: 'drop', address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 18 })).toThrow();
+      expect(() => getTokenColumnName({ symbol: 'SELECT', address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 18 })).toThrow();
     });
   });
 
@@ -109,8 +126,8 @@ describe('core/schema', () => {
 
   describe('buildCreateTableSql', () => {
     const tokens = [
-      { symbol: 'USDT', address: '0xdAC17F', decimals: 6 },
-      { symbol: 'AIA', address: '0xEC4C', decimals: 18 }
+      { symbol: 'USDT', address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 6 },
+      { symbol: 'AIA',  address: '0xABC1230000000000000000000000000000000000', decimals: 18 }
     ];
 
     test('contains required base columns', () => {
@@ -129,8 +146,8 @@ describe('core/schema', () => {
 
     test('one DECIMAL column per token with matching decimals', () => {
       const sql = buildCreateTableSql('s1', tokens);
-      expect(sql).toMatch(/`usdt_balance` DECIMAL\(38,6\) DEFAULT NULL/);
-      expect(sql).toMatch(/`aia_balance` DECIMAL\(38,18\) DEFAULT NULL/);
+      expect(sql).toMatch(/`usdt_dac1_balance` DECIMAL\(38,6\) DEFAULT NULL/);
+      expect(sql).toMatch(/`aia_abc1_balance` DECIMAL\(38,18\) DEFAULT NULL/);
     });
 
     test('engine and charset explicit', () => {
@@ -142,7 +159,7 @@ describe('core/schema', () => {
     test('empty token list omits token columns but still defines native_balance', () => {
       const sql = buildCreateTableSql('s1', []);
       expect(sql).toMatch(/`native_balance` DECIMAL\(38,18\) DEFAULT NULL/);
-      expect(sql).not.toMatch(/(usdt|aia)_balance/); // 没有代币列
+      expect(sql).not.toMatch(/(usdt|aia)_\w{4}_balance/); // 没有代币列
     });
 
     test('throws on invalid sessionId', () => {
@@ -188,27 +205,27 @@ describe('core/schema', () => {
 
   describe('buildUpdateBalancesSql', () => {
     const tokens = [
-      { symbol: 'USDT', address: '0xdAC17F', decimals: 6 },
-      { symbol: 'AIA', address: '0xEC4C', decimals: 18 }
+      { symbol: 'USDT', address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', decimals: 6 },
+      { symbol: 'AIA',  address: '0xABC1230000000000000000000000000000000000', decimals: 18 }
     ];
 
     test('uses CASE WHEN for each balance column', () => {
       const sql = buildUpdateBalancesSql('s1', tokens, [
-        { address: '0xaaa', nativeBalance: '1.5', balances: { USDT: '100', AIA: '50' } },
-        { address: '0xbbb', nativeBalance: '2.0', balances: { USDT: '200', AIA: '0' } }
+        { address: '0xaaa', nativeBalance: '1.5', balances: { usdt_dac1_balance: '100', aia_abc1_balance: '50' } },
+        { address: '0xbbb', nativeBalance: '2.0', balances: { usdt_dac1_balance: '200', aia_abc1_balance: '0' } }
       ]);
       expect(sql).toMatch(/UPDATE `balance_export_s1` SET/);
       expect(sql).toMatch(/`status` = 'done'/);
       expect(sql).toMatch(/`native_balance` = CASE `address`/);
       expect(sql).toMatch(/WHEN \? THEN \?/);
-      expect(sql).toMatch(/`usdt_balance` = CASE `address`/);
-      expect(sql).toMatch(/`aia_balance` = CASE `address`/);
+      expect(sql).toMatch(/`usdt_dac1_balance` = CASE `address`/);
+      expect(sql).toMatch(/`aia_abc1_balance` = CASE `address`/);
       expect(sql).toMatch(/WHERE `address` IN \(\?, \?\)/);
     });
 
     test('marks status failed when provided', () => {
       const sql = buildUpdateBalancesSql('s1', tokens, [
-        { address: '0xaaa', nativeBalance: '1.5', balances: { USDT: '100', AIA: '50' } }
+        { address: '0xaaa', nativeBalance: '1.5', balances: { usdt_dac1_balance: '100', aia_abc1_balance: '50' } }
       ], { status: 'failed', errorMsg: 'rpc timeout' });
       expect(sql).toMatch(/`status` = 'failed'/);
       expect(sql).toMatch(/`error_msg` = \?/);
