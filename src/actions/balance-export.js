@@ -391,12 +391,14 @@ async function runBalanceExport({
   const INSERT_CHUNK = 1000;
   const mysql = await import('mysql2/promise.js');
   const insertBatches = Math.ceil(addresses.length / INSERT_CHUNK);
-  logger.info(`[Phase 1] 导入 ${addresses.length} 地址 → ${tableName}（${insertBatches} 批）`);
+  logger.info(`[Phase 1] 开始导入 ${addresses.length} 地址 → ${tableName}（${insertBatches} 批）`);
   for (let i = 0; i < addresses.length; i += INSERT_CHUNK) {
+    const batchNo = Math.floor(i / INSERT_CHUNK) + 1;
     const chunk = addresses.slice(i, i + INSERT_CHUNK);
     const insertSql = buildInsertAddressesSql(sid, chunk);
     const formatted = mysql.default.format(insertSql, chunk);
     await pool.query(formatted);
+    logger.info(`[Phase 1] 导入进度 ${batchNo}/${insertBatches}：已写入 ${Math.min(i + INSERT_CHUNK, addresses.length)}/${addresses.length}`);
   }
   logger.info(`[Phase 1] 完成：${addresses.length} 地址已入表`);
 
@@ -409,9 +411,10 @@ async function runBalanceExport({
 
   // 6. 游标分批 select + update（无 status，按 id 升序逐批取出全部）
   const totalBatches = Math.ceil(totalCount / batchSize);
-  // 日志频率：每 10% 或 100 批（取大者）输出一次
-  const logEvery = Math.max(1, Math.floor(Math.max(totalBatches / 10, 100)));
-  logger.info(`[Phase 2] ${totalCount} 地址 × ${tokenList.length} 代币 → ${totalBatches} 批 RPC（${finalRpcUrl}）`);
+  // 日志频率：约每 5% 输出一次（保证至少 20 行进度日志，不管批次多少）
+  const logEvery = Math.max(1, Math.ceil(totalBatches / 20));
+  logger.info(`[Phase 2] 开始 ${totalCount} 地址 × ${tokenList.length} 代币 → ${totalBatches} 批 RPC`);
+  logger.info(`[Phase 2] RPC URL: ${finalRpcUrl}，并发 10 路`);
   let lastId = 0;
   let processed = 0;
   let updatedThisRun = 0;
@@ -477,9 +480,9 @@ async function runBalanceExport({
     updatedThisRun += updateRows.length;
 
     processed += batchAddresses.length;
-    if (batchNo % logEvery === 0 || processed === totalCount) {
+    if (batchNo % logEvery === 0 || processed === totalCount || batchNo === 1) {
       const pct = ((processed / totalCount) * 100).toFixed(1);
-      logger.info(`[Phase 2] 进度 ${pct}%：${processed}/${totalCount}（最新批次 ${batchNo}/${totalBatches}：${elapsed}s ${calls.length}条 ${rate}条/s 失败${failCount}）`);
+      logger.info(`[Phase 2] 进度 ${pct}%：${processed}/${totalCount}（批次 ${batchNo}/${totalBatches}：${elapsed}s ${rate}条/s 失败${failCount}）`);
     }
   }
 
