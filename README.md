@@ -11,7 +11,7 @@
 | `collect` | 批量归集多个账户的 ERC20 代币到目标地址 | 是 |
 | `collect-native` | 批量归集多个账户的原生币到目标地址 | 是 |
 | `distribute` | 从单一发送方向 xlsx 收款表批量分发原生币 | 是 |
-| `balance-export` | 从 xlsx 批量读取地址，从链上拉余额并导出为新 xlsx | 否（只读） |
+| `balance-export` | 从 xlsx 批量读取地址，从链上拉余额并写入 MySQL（支持断点续跑） | 否（只读） |
 | `gen-account` | 本地生成以太坊地址与私钥（带三层防御校验） | 否（完全离线） |
 
 ## 安装
@@ -153,23 +153,63 @@ npm run distribute -- list.xlsx
 
 ### 批量导出余额（balance-export）
 
-从 xlsx 表格读取所有地址，遍历配置好的原生币 + 每个 ERC20 代币，从链上读取余额并写回新 xlsx 表。
+从 xlsx 表格读取所有地址，遍历配置好的原生币 + 每个 ERC20 代币，从链上读取余额并**写入 MySQL**（宽表：每行一个地址，每代币一个 `DECIMAL` 列）。
+
+> 适用场景：10W+ 地址 × 数十个代币；支持断点续跑；查询分批 + 失败可重试。优先可靠性。
+
+#### 1. 准备数据库配置
+
+复制模板：
 
 ```bash
-# 输入必填；输出路径缺省时写到 output/balance-<ISO 时间戳>.xlsx
-npm run balance-export -- input.xlsx
+# Windows (Git Bash)
+cp config/database.example.json config/database.json
 
-# 自定义输出路径
-npm run balance-export -- input.xlsx balances-2026.xlsx
-
-# 用独立的代币列表文件
-npm run balance-export -- input.xlsx --tokens ./my-tokens.json
+# Windows (PowerShell / CMD)
+copy config\database.example.json config\database.json
 ```
 
-#### 代币列表配置（balance-export 专用）
+`config/database.json` 字段：
 
-balance-export 默认读 **`config/tokens-export.json`**（数组形式，每项 `{ symbol, address, decimals }`）。
-模板见 `config/tokens-export.example.json`：
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `host` | ✅ | MySQL 主机 |
+| `port` | ✅ | 端口（1..65535） |
+| `user` | ✅ | 数据库用户 |
+| `password` | ✅ | 密码 |
+| `database` | ✅ | 库名（需提前 `CREATE DATABASE`） |
+| `connectionLimit` | 可选 | 连接池上限，默认 10 |
+
+`config/database.json` 与 `config/tokens-export.json` 已在 `.gitignore` 中，**不要入库**。
+
+#### 2. 创建结果表
+
+工具首次运行时会**自动建表**。表名规则：
+
+```text
+balance_export_<sessionId>
+```
+
+其中 `sessionId` 缺省为 `YYYYMMDD_HHMMSS`（如 `balance_export_20260916_124057`），可通过 `--session <id>` 指定，便于断点续跑时复用同一张表。
+
+表结构示例：
+
+| 列 | 类型 | 说明 |
+|------|------|------|
+| `id` | `BIGINT PK AUTO_INCREMENT` | 行号 |
+| `address` | `VARCHAR(42) UNIQUE NOT NULL` | checksum 地址 |
+| `native_balance` | `DECIMAL(38,0)` | 原生币最小单位（`wei` / 最小位） |
+| `<symbol>_balance` | `DECIMAL(38,0)` | 每个代币一列（列名由 `getTokenSymbol` 派生，全部小写 + 非字母数字转 `_`） |
+| `status` | `ENUM('pending','done','failed')` | 导出状态（用于断点续跑） |
+| `error_msg` | `VARCHAR(255) NULL` | 单次批次失败原因 |
+| `created_at` | `DATETIME DEFAULT CURRENT_TIMESTAMP` | — |
+| `updated_at` | `DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP` | — |
+
+索引：`UNIQUE(address)`、`INDEX(status)`（断点续跑时快速挑 pending 行）。
+
+#### 3. 准备代币列表
+
+balance-export 默认读 **`config/tokens-export.json`**（数组形式，每项 `{ symbol, address, decimals }`）。模板见 `config/tokens-export.example.json`：
 
 ```json
 [
@@ -184,47 +224,100 @@ balance-export 默认读 **`config/tokens-export.json`**（数组形式，每项
 2. 默认 `config/tokens-export.json`（不存在 `warn` 并回退）
 3. 回退到 `config.json` 的 `tokens`（兼容 `name` 字段）
 
-可按需要把真实代币列表加入 `.gitignore`：
+无效地址（非 `ethers.isAddress`）自动跳过并 `warn`；重复符号按最后出现的覆盖；空代币列表也能跑（只查原生币）。
 
-```text
-config/tokens-export.json
+#### 4. 命令
+
+```bash
+# 首次 / 全新导入（自动建表）
+npm run balance-export -- input.xlsx
+
+# 断点续跑：复用已有表，只补 pending
+npm run balance-export -- input.xlsx --session 20260916_124057
+
+# 重建表：先 DROP 再 CREATE
+npm run balance-export -- input.xlsx --fresh
+
+# 调整每批 RPC 调用条数（默认 100，上限 10000）
+npm run balance-export -- input.xlsx --batch-size 200
 ```
 
-#### 输入 xlsx 格式
+参数：
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `<xlsx>` | 必填 | 输入文件路径 |
+| `--session <id>` | `YYYYMMDD_HHMMSS` | 会话 ID（即表名后缀）。**断点续跑必填**——与上次保持一致即可跳过已查的行 |
+| `--fresh` | `false` | 先 DROP 再 CREATE；丢数据慎用 |
+| `--batch-size <n>` | `100` | 每批从表里 `SELECT` pending 的地址数；同时也是单次 JSON-RPC 批量请求大小 |
+| `--tokens <file>` | `config/tokens-export.json` | 覆盖默认代币列表 |
+
+#### 5. 输入 xlsx 格式
 
 - **无表头**；每一行可以有任意多列
 - **所有非空单元格**均视为地址候选；自动展平读取
 - 无效地址（如错别字、非 0x 开头）跳过并 `warn`，不影响其他地址
-- 重复地址（checksum 不区分大小写）仅查询一次并 `warn`，输出表只保留一行
+- 重复地址（checksum 不区分大小写）仅插入一次，重复的也 `warn`
 
-示例（多列无表头）：
+#### 6. 查询与写入流程
 
-| | | |
-|---|---|---|
-| `0x111…111` | `0x222…222` | `0x333…333` |
-| `0x444…444` | | |
+```text
+1. 解析 xlsx → 去重 → INSERT IGNORE 到 balance_export_<session>（status='pending'）
+2. 循环（直到无 pending）：
+   a. SELECT id, address FROM balance_export_<session> WHERE status='pending'
+      ORDER BY id ASC LIMIT <batch-size>   ← 游标分页，断点安全
+   b. 单条 JSON-RPC 批量请求：每地址 1 个 eth_getBalance + N 个 eth_call(balanceOf)
+      失败时整批回滚对应行的 status='failed' 并记 error_msg
+   c. 单条 SQL UPDATE（使用 CASE WHEN）批量回写金额：
+        SET native_balance = CASE id WHEN … END,
+            usdt_balance    = CASE id WHEN … END,
+            status          = 'done',
+            updated_at      = NOW()
+        WHERE id IN (…)
+3. 输出汇总：totalCount / doneCount / failedCount / skippedCount
+```
 
-#### 输出 xlsx 格式
-
-- 表头：`[地址, 原生币(SYMBOL), SYMBOL(0xXXXX), …]`
-- 代币列名格式：`<代币符号>(0x<合约地址前 4 字符>)`，例如 `USDT(0xdAC1)`
-- 每个地址占一行；列与表头一一对应
-- **没有任何代币列表**：仅输出 `地址` 与 `原生币(SYMBOL)` 两列
-- **未配置 `network.nativeSymbol`**：默认 `ETH`
-- **单笔 RPC 查询失败**：对应单元格写入占位符 `--`，其他单元格继续；日志中 `warn` 记录失败原因
-- 输出目录不存在时自动创建
-
-#### 行为日志示例
+进度日志（每 `max(50, total/10)` 行输出一次）：
 
 ```
-=== 开始导出余额 ===
-输入文件: ./addresses.xlsx
-读取统计: 共 248 个非空单元格，去重后有效地址 235 个
-第 12 行 第 3 列跳过: 地址无效 (0xnot-an-address)
-第 18 行 第 2 列重复地址: 0x111…111（仅查询一次）
-开始查询余额: 235 个地址 × (1 原生币 + 2 个 ERC20) = 705 次调用
-[0x222…] USDT 查询失败: RPC timeout
-=== 导出完成 === 输出: ./output/balance-2026-07-08T12-40-57-659Z.xlsx（235 行 × 4 列）
+[balance-export] 会话 20260916_124057 表 balance_export_20260916_124057 启动
+[balance-export] 去重后 1234 个有效地址
+[balance-export] 已写入 1234 个地址到表 balance_export_20260916_124057
+[balance-export] 进度: 已完成 200/1234 (16.2%)
+[balance-export] 进度: 已完成 400/1234 (32.4%)
+…
+[balance-export] 完成: total=1234 done=1232 failed=2 skipped=0
+```
+
+#### 7. 失败重试与断点续跑
+
+- **网络/HTTP 错误**：`batchRpcCall` 自动指数退避重试（1s → 2s → 4s）
+- **单批整批失败**：把该批地址 `status='failed'`，`error_msg` 写明原因，**继续下一批**（不终止整个流程）
+- **进程中断**：再次运行同 `--session`，未完成的 `pending` 行自动续跑；已 `done` 的跳过；上次 `failed` 的重新尝试（除非手动改回 `pending`）
+
+#### 8. 汇总导出 SQL
+
+```sql
+SELECT address,
+       native_balance,
+       usdt_balance,
+       aia_balance,
+       status,
+       error_msg,
+       updated_at
+FROM balance_export_20260916_124057
+ORDER BY id;
+```
+
+如需按人读单位展示：
+
+```sql
+SELECT address,
+       native_balance / 1e18 AS native_eth,
+       usdt_balance    / 1e6  AS usdt,
+       aia_balance     / 1e18 AS aia,
+       status
+FROM balance_export_20260916_124057;
 ```
 
 ### 生成账户（gen-account）
@@ -272,22 +365,30 @@ src/
 │   ├── config.js              # 加载 / 校验 config.json
 │   ├── logger.js              # 控制台 + 文件双输出，懒加载日志流
 │   ├── rpc.js                 # JsonRpcProvider 封装
-│   └── xlsx.js                # xlsx 解析、金额归一化、转账记录提取
+│   ├── xlsx.js                # xlsx 解析、金额归一化、转账记录提取
+│   ├── schema.js              # SQL 标识符校验 + 建表 / UPDATE / INSERT DDL/DML 构建器
+│   ├── db.js                  # MySQL 配置加载 + 连接池 + 事务包装
+│   └── batch-rpc.js           # JSON-RPC 2.0 批量调用 + 重试 / 指数退避
 └── actions/
     ├── account.js             # gen-account：账户生成 + 三层防御
     ├── balance.js             # balance：原生币 + ERC20 余额查询
     ├── executor.js            # execute：批量合约执行
     ├── collect.js             # collect / collect-native：代币与原生币归集
-    └── distribute.js          # distribute：xlsx 驱动批量分发
+    ├── distribute.js          # distribute：xlsx 驱动批量分发
+    └── balance-export.js      # balance-export：xlsx 解析 → MySQL 宽表 → 批量 RPC 写回
 
 tests/
-├── actions/                   # balance / collect / distribute / executor / account 单元测试
+├── actions/                   # balance / collect / distribute / executor / account / balance-export 单元测试
 │                              # 含 account.integration.test.js（真实 ethers 跑闭环）
-└── core/                      # config / logger / rpc / xlsx 单元测试
+└── core/                      # config / logger / rpc / xlsx / schema / db / batch-rpc 单元测试
 
 config/
 ├── config.example.json        # 模板（已入库）
-└── config.json                # 实际配置（已 gitignore，绝对不要入库）
+├── config.json                # 实际配置（已 gitignore，绝对不要入库）
+├── tokens-export.example.json # balance-export 代币列表模板（已入库）
+├── tokens-export.json         # 真实代币列表（已 gitignore）
+├── database.example.json      # MySQL 配置模板（已入库）
+└── database.json              # 真实数据库配置（已 gitignore）
 
 coverage/                      # 测试覆盖率产物（已 gitignore）
 docs/                          # 项目文档
@@ -300,13 +401,13 @@ logs/                          # 运行日志（已 gitignore）
 npm test
 ```
 
-使用 Jest + ESM（`--experimental-vm-modules`）。覆盖率阈值见 `jest.config.js`：分支 / 函数 / 行 / 语句均 ≥ 80%，产物输出到 `coverage/`。
+使用 Jest + ESM（`--experimental-vm-modules`）。覆盖率阈值见 `jest.config.js`，产物输出到 `coverage/`。
 
 测试组织：
 
 | 类型 | 覆盖范围 | 文件 |
 |------|----------|------|
-| 单元 | 配置加载、日志、RPC、xlsx 解析、金额归一化、命令各分支 | `tests/core/*.test.js`、`tests/actions/*.test.js` |
+| 单元 | 配置加载、日志、RPC、xlsx 解析、金额归一化、SQL 构建器、JSON-RPC 批量、各 action | `tests/core/*.test.js`、`tests/actions/*.test.js` |
 | 集成 | 真实 ethers 跑账户生成 sign + recover 闭环 | `tests/actions/account.integration.test.js` |
 
 ## 日志
@@ -325,11 +426,14 @@ npm test
 ## 安全
 
 - 本仓库**不存储任何真实私钥**——`config/config.json` 已在 `.gitignore` 中
-- 修改配置前请确认 `.gitignore` 中包含 `config/config.json`
+- `config/database.json`（数据库密码）与 `config/tokens-export.json`（代币列表）也在 `.gitignore` 中
+- 修改配置前请确认 `.gitignore` 中包含上述三个文件
 - 提交前可运行 `git status` 再次确认没有敏感文件被暂存
 - `gen-account` 输出包含私钥，请妥善保管；建议管道重定向到本地加密存储，**不要写入公共日志或粘贴到公共渠道**
 - 所有合约 / 归集 / 分发交易都先 `estimateGas` 预检，明显会回滚的交易不会浪费 Gas
 - `distribute` 在发第一笔前预检余额（含 Gas 预留），整体不足时一笔不发，避免半完成状态
+- `balance-export` 写入 MySQL 的所有 SQL 均使用预编译参数（防注入）；表名 / 列名均通过关键字黑名单 + 长度 + 字符白名单校验
+- 表 / 列名含 token symbol 时会被规整为 `[a-z0-9_]+`，并强制加 `_balance` 后缀；`drop` 等关键字会被拒绝
 
 ## 开发提示
 

@@ -1,12 +1,12 @@
 [
   {
     "symbol": "USDT",
-    "address": "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+    "address": "0x848cb1a9770830da575DfD246dF2d4e38c1D40ed",
     "decimals": 6
   },
   {
-    "symbol": "AIA",
-    "address": "0xABC1230000000000000000000000000000000000",
+    "symbol": "WAIA",
+    "address": "0xEC4C225F734a614B6d6f61b5Ddf0ae96c8e85E32",
     "decimals": 18
   }
 ]

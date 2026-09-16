@@ -2,35 +2,59 @@ import fs from 'fs';
 import path from 'path';
 import * as XLSX from 'xlsx';
 import { ethers } from 'ethers';
-import { queryTokenBalance } from './balance.js';
+import { batchRpcCall, encodeBalanceOfData } from '../core/batch-rpc.js';
+import {
+  tableNameFor,
+  getTokenColumnName,
+  buildCreateTableSql,
+  buildInsertAddressesSql,
+  buildSelectPendingSql,
+  buildUpdateBalancesSql,
+  buildUpdateBalancesParams
+} from '../core/schema.js';
 
-// SheetJS ESM 构建需要 fs 注入（与 src/core/xlsx.js 保持一致）
+// SheetJS ESM 注入
 if (typeof XLSX.set_fs === 'function') {
   XLSX.set_fs(fs);
 }
 
-// 占位符：某单元格的余额查询失败时写入此值
-const PLACEHOLDER = '--';
+/**
+ * @typedef {Object} BalanceExportResult
+ * @property {string} sessionId
+ * @property {string} tableName
+ * @property {number} totalCount - 入库地址数（含已存在跳过）
+ * @property {number} doneCount - 状态变为 done 的行数
+ * @property {number} failedCount - 整批失败的行数
+ * @property {number} skippedCount - 重启时已 done 跳过的行数
+ */
+
+// =====================================================================
+// xlsx 解析（保留独立函数）
+// =====================================================================
 
 /**
  * @typedef {Object} ExtractedAddress
  * @property {string} address - checksum 形式
- * @property {number} rowNumber - 在 xlsx 中的行号（含表头，从 1 开始）
- * @property {number} colNumber - 列号（从 1 开始）
+ * @property {number} rowNumber
+ * @property {number} colNumber
  */
 
 /**
  * @typedef {Object} SkippedCell
- * @property {string} raw - 原始单元格内容
- * @property {number} rowNumber - 行号
- * @property {number} colNumber - 列号
+ * @property {string} raw
+ * @property {number} rowNumber
+ * @property {number} colNumber
  */
 
 /**
- * 从 xlsx 文件中提取所有地址
- * 约定：无表头，所有非空单元格均视为地址候选
+ * 从 xlsx 中提取所有地址
  * @param {string} filePath
- * @returns {{addresses: string[], skipped: SkippedCell[], duplicates: Array<{address: string, rowNumber: number, colNumber: number}>}}
+ * @returns {{
+ *   addresses: string[],
+ *   skipped: SkippedCell[],
+ *   duplicates: Array<{address: string, rowNumber: number, colNumber: number}>,
+ *   totalNonEmpty: number
+ * }}
  */
 function extractAddressesFromSheet(filePath) {
   const fullPath = path.resolve(filePath);
@@ -41,7 +65,6 @@ function extractAddressesFromSheet(filePath) {
 
   const buffer = fs.readFileSync(fullPath);
 
-  // xlsx 魔数校验（与 src/core/xlsx.js 一致）
   if (buffer.length < 4 || buffer.readUInt32LE(0) !== 0x04034b50) {
     throw new Error('文件不是有效的 xlsx 格式');
   }
@@ -53,7 +76,6 @@ function extractAddressesFromSheet(filePath) {
     throw new Error(`读取 xlsx 失败: ${error.message}`);
   }
 
-  // SheetJS 保证新建的工作簿至少有一个空 sheet，因此 SheetNames[0] 与 Sheets[...] 始终存在
   const sheetName = workbook.SheetNames[0];
   const sheet = workbook.Sheets[sheetName];
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: true, raw: true });
@@ -65,8 +87,8 @@ function extractAddressesFromSheet(filePath) {
   /** @type {Array<{address: string, rowNumber: number, colNumber: number}>} */
   const duplicates = [];
   const seen = new Set();
-
   let totalNonEmpty = 0;
+
   rows.forEach((row, rowIdx) => {
     if (!Array.isArray(row)) return;
     row.forEach((cell, colIdx) => {
@@ -93,8 +115,11 @@ function extractAddressesFromSheet(filePath) {
   return { addresses, skipped, duplicates, totalNonEmpty };
 }
 
+// =====================================================================
+// 代币列表加载（保留）
+// =====================================================================
+
 /**
- * 取代币显示符号：独立配置用 `symbol`，全局 config.tokens 用 `name`，都没有时回退 'TOKEN'
  * @param {Object} info
  * @returns {string}
  */
@@ -103,7 +128,7 @@ function getTokenSymbol(info) {
 }
 
 /**
- * 把代币配置规范化为数组形式（兼容对象与数组输入）
+ * 兼容对象 / 数组输入
  * @param {Array|Object|null|undefined} tokens
  * @returns {Array<{symbol: string, address: string, decimals: number}>}
  */
@@ -116,7 +141,6 @@ function normalizeTokens(tokens) {
 }
 
 /**
- * 从 JSON 文件读取代币列表
  * @param {string} filePath
  * @returns {Array}
  */
@@ -140,188 +164,373 @@ function readTokenListFile(filePath) {
 }
 
 /**
- * 解析代币列表：
- * 1) --tokens 指定的文件（不存在报错）
- * 2) 默认 config/tokens-export.json
- * 3) 回退到 fallbackTokens（来自 config.tokens），并 warn
- * @param {string|undefined} tokensPath - --tokens 路径
- * @param {Array|Object|null} fallbackTokens - config.tokens
+ * @param {string|undefined} tokensPath
+ * @param {Array|Object|null} fallbackTokens
  * @param {Object} logger
  * @returns {Array}
  */
 function loadTokenList(tokensPath, fallbackTokens, logger) {
+  let raw;
   if (tokensPath) {
-    return readTokenListFile(tokensPath);
+    raw = readTokenListFile(tokensPath);
+  } else {
+    const defaultPath = path.resolve('config/tokens-export.json');
+    if (fs.existsSync(defaultPath)) {
+      logger.info(`读取代币列表: ${defaultPath}`);
+      raw = readTokenListFile(defaultPath);
+    } else {
+      logger.warn(`config/tokens-export.json 不存在，回退使用 config.tokens`);
+      raw = normalizeTokens(fallbackTokens);
+    }
   }
-  const defaultPath = path.resolve('config/tokens-export.json');
-  if (fs.existsSync(defaultPath)) {
-    logger.info(`读取代币列表: ${defaultPath}`);
-    return readTokenListFile(defaultPath);
+  // 校验每个 token 的 address 必须是合法以太坊地址；否则跳过并 warn
+  const valid = [];
+  for (const t of raw) {
+    if (!t.address || !ethers.isAddress(t.address)) {
+      logger.warn(`代币 ${t.symbol || '(未知)'} 的合约地址无效: ${t.address}，已跳过`);
+      continue;
+    }
+    valid.push({
+      ...t,
+      // 统一 checksum 化
+      address: ethers.getAddress(t.address)
+    });
   }
-  logger.warn(`config/tokens-export.json 不存在，回退使用 config.tokens`);
-  return normalizeTokens(fallbackTokens);
+  return valid;
 }
 
 /**
- * 构建输出 xlsx 的表头
- * @param {string} nativeSymbol - 原生币符号
- * @param {Array} tokenList - 代币列表（数组形式）
- * @returns {string[]}
+ * 校验并 checksum 化代币列表，过滤无效地址
+ * @param {Array} tokens
+ * @param {Object} logger
+ * @returns {Array}
  */
-function buildHeader(nativeSymbol, tokenList) {
-  const header = ['地址', `原生币(${nativeSymbol})`];
-  for (const info of tokenList) {
-    const symbol = getTokenSymbol(info);
-    // 取 '0x' + 后续 4 位十六进制字符
-    const prefix = info.address.slice(0, 6);
-    header.push(`${symbol}(${prefix})`);
+function sanitizeTokens(tokens, logger) {
+  const valid = [];
+  for (const t of tokens) {
+    if (!t || !t.address || !ethers.isAddress(t.address)) {
+      logger.warn(`代币 ${(t && t.symbol) || '(未知)'} 的合约地址无效: ${t && t.address}，已跳过`);
+      continue;
+    }
+    valid.push({ ...t, address: ethers.getAddress(t.address) });
   }
-  return header;
+  return valid;
 }
 
 /**
- * 查询单个地址的某代币余额（人类可读字符串，失败返回占位符）
- * @param {Object} rpcClient
- * @param {string} address
- * @param {Object} tokenInfo
- * @returns {Promise<string>}
- */
-async function readTokenBalanceCell(rpcClient, address, tokenInfo) {
-  try {
-    const raw = await queryTokenBalance(rpcClient, address, tokenInfo.address);
-    const decimals = tokenInfo.decimals ?? 18;
-    return ethers.formatUnits(raw, decimals);
-  } catch (error) {
-    return { ok: false, error: error.message, tokenName: getTokenSymbol(tokenInfo) };
-  }
-}
-
-/**
- * 查询单个地址的原生币余额（人类可读字符串，失败返回占位符）
- * @param {Object} rpcClient
- * @param {string} address
- * @returns {Promise<string|{ok:false, error:string}>}
- */
-async function readNativeBalanceCell(rpcClient, address) {
-  try {
-    const raw = await rpcClient.getNativeBalance(address);
-    return ethers.formatUnits(BigInt(raw), 18);
-  } catch (error) {
-    return { ok: false, error: error.message };
-  }
-}
-
-/**
- * 生成默认输出路径 output/balance-<ISO时间>.xlsx
- * @param {string} [cwd=process.cwd()]
+ * 生成默认 sessionId：YYYYMMDD_HHMMSS（本地时区）
  * @returns {string}
  */
-function defaultOutputPath(cwd = process.cwd()) {
-  const now = new Date();
-  // 将 ':' 替换为 '-' 以兼容 Windows 文件名
-  const stamp = now.toISOString().replace(/[:]/g, '-');
-  return path.join(cwd, 'output', `balance-${stamp}.xlsx`);
+function defaultSessionId() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return (
+    d.getFullYear().toString() +
+    pad(d.getMonth() + 1) +
+    pad(d.getDate()) +
+    '_' +
+    pad(d.getHours()) +
+    pad(d.getMinutes()) +
+    pad(d.getSeconds())
+  );
+}
+
+// =====================================================================
+// 余额查询 helpers
+// =====================================================================
+
+/**
+ * 把 wei 字符串转为十进制字符串（保留精度，去除 trailing zeros）
+ * @param {string|bigint} raw
+ * @param {number} decimals
+ * @returns {string|null}
+ */
+function formatBalance(raw, decimals) {
+  if (raw === null || raw === undefined) return null;
+  try {
+    return ethers.formatUnits(raw, decimals);
+  } catch (_) {
+    return null;
+  }
+}
+
+// =====================================================================
+// 主流程
+// =====================================================================
+
+/**
+ * 计算进度日志间隔
+ * @param {number} total
+ * @returns {number}
+ */
+function calcProgressInterval(total) {
+  return Math.max(50, Math.floor(total / 10));
 }
 
 /**
- * 执行余额导出
- * @param {Object} params
- * @param {Object} params.config - 完整配置（取 network.nativeSymbol 与 fallback tokens）
- * @param {string} params.inputPath - 输入 xlsx 路径
- * @param {string} [params.outputPath] - 输出 xlsx 路径，默认 output/balance-<timestamp>.xlsx
- * @param {string} [params.tokensPath] - --tokens 指定的代币列表文件路径，覆盖默认 config/tokens-export.json
- * @param {Object} params.rpcClient - RPC 客户端
- * @param {Object} params.logger - Logger 实例
- * @returns {Promise<{outputPath: string, addressCount: number, tokenCount: number}>}
+ * 把代币余额结果按 address 聚合
+ * @param {Array} tokenResults - batchRpcCall 返回（按 input id 顺序）
+ * @param {Array<string>} addressesInOrder
+ * @param {Array<Object>} tokens
+ * @returns {Map<string, Object<string,string|null>>}
  */
-async function runBalanceExport({ config, inputPath, outputPath, tokensPath, rpcClient, logger }) {
-  const nativeSymbol = config.network?.nativeSymbol || 'ETH';
-  const tokenList = loadTokenList(tokensPath, config.tokens, logger);
+function indexTokenResultsByAddress(tokenResults, addressesInOrder, tokens) {
+  // tokenResults 与构造的 calls 顺序一致：先 addressesInOrder × tokens (row-major)
+  const out = new Map();
+  for (const addr of addressesInOrder) {
+    out.set(addr, {});
+  }
+  let idx = 0;
+  for (const addr of addressesInOrder) {
+    const bag = out.get(addr);
+    for (const t of tokens) {
+      const r = tokenResults[idx];
+      idx += 1;
+      const sym = getTokenSymbol(t);
+      if (r && r.ok) {
+        bag[sym] = formatBalance(r.result, t.decimals);
+      } else {
+        bag[sym] = null;
+      }
+    }
+  }
+  return out;
+}
 
-  logger.info(`=== 开始导出余额 ===`);
-  logger.info(`输入文件: ${inputPath}`);
+/**
+ * 执行余额导出（MySQL 模式）
+ * @param {Object} params
+ * @param {Object} params.config - 完整 config（取 network + tokens 回退）
+ * @param {string} params.inputPath - 输入 xlsx 路径
+ * @param {Object} params.pool - mysql2 pool
+ * @param {string} [params.sessionId] - 不传则生成时间戳
+ * @param {string} [params.tokensPath] - --tokens 覆盖
+ * @param {boolean} [params.fresh=false] - 是否 DROP 旧表
+ * @param {number} [params.batchSize=100] - 每批从 DB 取的地址数（也是 RPC batch 大小）
+ * @param {number} [params.maxRpcRetries=3] - RPC 失败重试
+ * @param {Object} [params.rpcBatchCall] - 注入，便于测试；默认 batchRpcCall
+ * @param {string} [params.rpcUrl] - 默认 config.network.rpcUrl
+ * @param {Object} params.logger
+ * @returns {Promise<BalanceExportResult>}
+ */
+async function runBalanceExport({
+  config,
+  inputPath,
+  pool,
+  sessionId,
+  tokensPath,
+  tokens,  // 可选：直接传代币列表，跳过 loadTokenList
+  fresh = false,
+  batchSize = 100,
+  maxRpcRetries = 3,
+  rpcBatchCall = batchRpcCall,
+  rpcUrl,
+  logger
+}) {
+  if (!pool) throw new Error('pool 必填');
+  if (!inputPath) throw new Error('inputPath 必填');
+  if (!logger) throw new Error('logger 必填');
 
+  const sid = sessionId || defaultSessionId();
+  const tableName = tableNameFor(sid);
+  const finalRpcUrl = rpcUrl || config.network?.rpcUrl;
+
+  // tokens 优先级：显式传入 > tokensPath > 默认文件 > config.tokens
+  let tokenList;
+  if (Array.isArray(tokens)) {
+    tokenList = sanitizeTokens(tokens, logger);
+  } else {
+    tokenList = loadTokenList(tokensPath, config.tokens, logger);
+  }
+
+  logger.info('=== 开始导出余额（MySQL 模式） ===');
+  logger.info(`Session: ${tableName}${fresh ? ' (fresh)' : ''}`);
+  logger.info(`代币列表: ${tokenList.length} 个`);
+
+  // 1. 解析 xlsx
   const { addresses, skipped, duplicates, totalNonEmpty } = extractAddressesFromSheet(inputPath);
-
+  logger.info(`输入文件: ${inputPath}`);
   logger.info(`读取统计: 共 ${totalNonEmpty} 个非空单元格，去重后有效地址 ${addresses.length} 个`);
   for (const s of skipped) {
     logger.warn(`第 ${s.rowNumber} 行 第 ${s.colNumber} 列跳过: 地址无效 (${s.raw})`);
   }
   for (const d of duplicates) {
-    logger.warn(`第 ${d.rowNumber} 行 第 ${d.colNumber} 列重复地址: ${d.address}（仅查询一次）`);
+    logger.warn(`第 ${d.rowNumber} 行 第 ${d.colNumber} 列重复地址: ${d.address}`);
   }
 
   if (addresses.length === 0) {
     throw new Error('没有有效地址可查询');
   }
 
-  const header = buildHeader(nativeSymbol, tokenList);
+  // 2. fresh → DROP 旧表
+  if (fresh) {
+    logger.info(`DROP 旧表: ${tableName}`);
+    await pool.execute(`DROP TABLE IF EXISTS \`${tableName}\`;`);
+  }
 
-  logger.info(`开始查询余额: ${addresses.length} 个地址 × (1 原生币 + ${tokenList.length} 个 ERC20) = ${addresses.length * (1 + tokenList.length)} 次调用`);
+  // 3. 建表
+  const createSql = buildCreateTableSql(sid, tokenList);
+  logger.info(`建表: ${tableName}`);
+  await pool.execute(createSql);
 
-  /** @type {Array<Array<string>>} */
-  const dataRows = [];
-  const totalAddresses = addresses.length;
-  // 进度间隔：最少 50 个，最多不超过总数的 10%
-  const progressInterval = Math.max(50, Math.floor(totalAddresses / 10));
+  // 4. 插入地址
+  const insertSql = buildInsertAddressesSql(sid, addresses);
+  await pool.execute(insertSql, addresses);
 
-  for (let i = 0; i < totalAddresses; i += 1) {
-    const address = addresses[i];
-    /** @type {string[]} */
-    const row = [address];
+  // 5. 统计总数与已完成数
+  const [totalRows] = await pool.execute(
+    `SELECT COUNT(*) AS cnt FROM \`${tableName}\`;`
+  );
+  const totalCount = Number(totalRows[0].cnt);
+  const [doneRows] = await pool.execute(
+    `SELECT COUNT(*) AS cnt FROM \`${tableName}\` WHERE status = 'done';`
+  );
+  const initialDoneCount = Number(doneRows[0].cnt);
+  logger.info(`开始查询: 总 ${totalCount} 地址，已 done ${initialDoneCount}，待处理 ${totalCount - initialDoneCount}`);
 
-    const native = await readNativeBalanceCell(rpcClient, address);
-    if (typeof native === 'string') {
-      row.push(native);
-    } else {
-      logger.warn(`[${address}] 原生币查询失败: ${native.error}`);
-      row.push(PLACEHOLDER);
+  // 6. 分批查询 + 余额更新
+  const progressInterval = calcProgressInterval(totalCount - initialDoneCount);
+  let lastId = 0;
+  let processed = 0;
+  let doneThisRun = 0;
+  let failedThisRun = 0;
+
+  while (true) {
+    const selectSql = buildSelectPendingSql(sid, lastId, batchSize);
+    const [rows] = await pool.execute(selectSql, [lastId, batchSize]);
+    if (rows.length === 0) break;
+
+    const batchAddresses = rows.map(r => r.address);
+    const maxRowId = Math.max(...rows.map(r => Number(r.id)));
+    lastId = maxRowId;
+
+    // 6.1 构造 RPC calls：每个地址 × (1 原生币 + N 代币)
+    const calls = [];
+    // 原生币
+    for (const addr of batchAddresses) {
+      calls.push({ id: `native:${addr}`, method: 'eth_getBalance', params: [addr, 'latest'] });
     }
-
-    for (const info of tokenList) {
-      const cell = await readTokenBalanceCell(rpcClient, address, info);
-      if (typeof cell === 'string') {
-        row.push(cell);
-      } else {
-        logger.warn(`[${address}] ${cell.tokenName} 查询失败: ${cell.error}`);
-        row.push(PLACEHOLDER);
+    // ERC20
+    for (const t of tokenList) {
+      const data = encodeBalanceOfData(t.address);
+      for (const addr of batchAddresses) {
+        calls.push({ id: `token:${t.address}:${addr}`, method: 'eth_call', params: [{ to: t.address, data }, 'latest'] });
       }
     }
-    dataRows.push(row);
 
-    const done = i + 1;
-    if (done === totalAddresses || done % progressInterval === 0) {
-      logger.info(`进度: ${done}/${totalAddresses} 个地址已查询`);
+    // 6.2 调批量 RPC（带重试 + 超时由 batchRpcCall 默认处理）
+    let results;
+    try {
+      results = await rpcBatchCall({
+        rpcUrl: finalRpcUrl,
+        calls,
+        retries: maxRpcRetries,
+        timeoutMs: 30000
+      });
+    } catch (err) {
+      // 整批 HTTP 失败：标记整批 failed，重试仍失败的最终由 catch 处理
+      logger.error(`整批 RPC 失败 (${batchAddresses.length} 地址): ${err.message}`);
+      const failedRows = batchAddresses.map(addr => ({
+        address: addr,
+        nativeBalance: null,
+        balances: Object.fromEntries(tokenList.map(t => [getTokenSymbol(t), null]))
+      }));
+      const updateSql = buildUpdateBalancesSql(sid, tokenList, failedRows,
+        { status: 'failed', errorMsg: err.message });
+      const updateParams = buildUpdateBalancesParams(failedRows, tokenList,
+        { status: 'failed', errorMsg: err.message });
+      await pool.execute(updateSql, updateParams);
+      failedThisRun += batchAddresses.length;
+      processed += batchAddresses.length;
+      continue;
+    }
+
+    // 6.3 切分 results：前 batchAddresses.length 是 native，剩下是 token（按 token 维度连续）
+    const nativeResults = results.slice(0, batchAddresses.length);
+    const tokenResults = results.slice(batchAddresses.length);
+
+    const tokenByAddr = indexTokenResultsByAddress(tokenResults, batchAddresses, tokenList);
+
+    // 6.4 构造 UPDATE 行
+    const updateRows = batchAddresses.map((addr, i) => {
+      const nativeR = nativeResults[i];
+      const nativeBalance = nativeR && nativeR.ok ? nativeR.result : null;
+      const balances = tokenByAddr.get(addr) || {};
+      const allFailed = !nativeR?.ok && Object.values(balances).every(v => v === null);
+      return {
+        address: addr,
+        nativeBalance,
+        balances,
+        _allFailed: allFailed
+      };
+    });
+
+    // 拆 done / failed 两组，分别 UPDATE（status 不同）
+    const failedRows = updateRows.filter(r => r._allFailed);
+    const doneRows = updateRows.filter(r => !r._allFailed);
+
+    if (doneRows.length > 0) {
+      const sql = buildUpdateBalancesSql(sid, tokenList, doneRows.map(r => ({
+        address: r.address,
+        nativeBalance: r.nativeBalance,
+        balances: r.balances
+      })), { status: 'done' });
+      const params = buildUpdateBalancesParams(
+        doneRows.map(r => ({
+          address: r.address,
+          nativeBalance: r.nativeBalance,
+          balances: r.balances
+        })),
+        tokenList,
+        { status: 'done' }
+      );
+      await pool.execute(sql, params);
+      doneThisRun += doneRows.length;
+    }
+
+    if (failedRows.length > 0) {
+      const rowsToUpdate = failedRows.map(r => ({
+        address: r.address,
+        nativeBalance: null,
+        balances: Object.fromEntries(tokenList.map(t => [getTokenSymbol(t), null]))
+      }));
+      const errMsg = failedRows[0]._allFailed
+        ? (() => {
+            // 拼接错误原因（取首个 native 错误）
+            const n = nativeResults[batchAddresses.indexOf(failedRows[0].address)];
+            return (n && n.error) || 'all queries failed';
+          })()
+        : 'all queries failed';
+      const sql = buildUpdateBalancesSql(sid, tokenList, rowsToUpdate,
+        { status: 'failed', errorMsg: errMsg });
+      const params = buildUpdateBalancesParams(rowsToUpdate, tokenList,
+        { status: 'failed', errorMsg: errMsg });
+      await pool.execute(sql, params);
+      failedThisRun += failedRows.length;
+    }
+
+    processed += batchAddresses.length;
+    if (processed % progressInterval === 0 || processed === totalCount - initialDoneCount) {
+      logger.info(`进度: ${processed}/${totalCount - initialDoneCount}`);
     }
   }
 
-  const finalOutputPath = outputPath || defaultOutputPath();
-  const outputDir = path.dirname(finalOutputPath);
-  if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir, { recursive: true });
-  }
-
-  const sheet = XLSX.utils.aoa_to_sheet([header, ...dataRows]);
-  const workbook = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(workbook, sheet, 'Sheet1');
-  XLSX.writeFile(workbook, finalOutputPath);
-
-  logger.info(`=== 导出完成 === 输出: ${finalOutputPath}（${dataRows.length} 行 × ${header.length} 列）`);
+  logger.info(`=== 完成 === 表: ${tableName} done=${doneThisRun} failed=${failedThisRun}`);
 
   return {
-    outputPath: finalOutputPath,
-    addressCount: dataRows.length,
-    tokenCount: tokenList.length
+    sessionId: sid,
+    tableName,
+    totalCount,
+    doneCount: doneThisRun + initialDoneCount,
+    failedCount: failedThisRun,
+    skippedCount: initialDoneCount
   };
 }
 
 export {
   extractAddressesFromSheet,
-  buildHeader,
-  defaultOutputPath,
-  getTokenSymbol,
   loadTokenList,
-  normalizeTokens,
-  readTokenListFile,
+  getTokenSymbol,
+  defaultSessionId,
   runBalanceExport
 };

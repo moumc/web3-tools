@@ -1,3 +1,6 @@
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { Logger } from './core/logger.js';
 import { loadConfig } from './core/config.js';
 import { RpcClient } from './core/rpc.js';
@@ -83,27 +86,53 @@ async function main() {
     } else if (action === 'balance-export') {
       const inputPath = args[1];
       if (!inputPath) {
-        console.error('用法: node src/index.js balance-export <输入 xlsx 路径> [输出 xlsx 路径] [--tokens <代币列表>]');
+        console.error('用法: node src/index.js balance-export <输入 xlsx 路径> [--session <id>] [--fresh] [--batch-size <n>] [--tokens <代币列表>]');
         console.error('xlsx 格式: 无表头，所有非空单元格视为地址');
         process.exit(1);
       }
-      let outputPath;
+      let sessionId;
       let tokensPath;
+      let fresh = false;
+      let batchSize = 100;
       for (let i = 2; i < args.length; i += 1) {
-        if (args[i] === '--tokens') {
+        const a = args[i];
+        if (a === '--session') {
+          sessionId = args[++i];
+        } else if (a === '--tokens') {
           tokensPath = args[++i];
-        } else if (!outputPath) {
-          outputPath = args[i];
+        } else if (a === '--fresh') {
+          fresh = true;
+        } else if (a === '--batch-size') {
+          batchSize = Number.parseInt(args[++i], 10);
+          if (!Number.isInteger(batchSize) || batchSize <= 0 || batchSize > 10000) {
+            console.error('--batch-size 必须是 1..10000 的整数');
+            process.exit(1);
+          }
         }
       }
-      await runBalanceExport({
-        config,
-        inputPath,
-        outputPath,
-        tokensPath,
-        rpcClient,
-        logger
-      });
+
+      // 加载数据库配置
+      const { loadDatabaseConfig, createPool, closePool } = await import('./core/db.js');
+      const dbCfg = loadDatabaseConfig();
+      if (!dbCfg) {
+        console.error('未找到 config/database.json；balance-export 需要 MySQL 配置');
+        process.exit(1);
+      }
+      const pool = createPool(dbCfg);
+      try {
+        await runBalanceExport({
+          config,
+          inputPath,
+          pool,
+          sessionId,
+          tokensPath,
+          fresh,
+          batchSize,
+          logger
+        });
+      } finally {
+        await closePool(pool);
+      }
     } else {
       console.error(`未知操作: ${action}`);
       console.error('可用操作: balance, execute, collect, collect-native, distribute, balance-export, gen-account');
@@ -117,4 +146,19 @@ async function main() {
   process.exit(0);
 }
 
-main();
+// 仅当作为入口脚本直接执行时才调用 main()；被 import 时（例如测试）不自动跑
+const isMain = (() => {
+  try {
+    const argv1 = process.argv[1];
+    if (!argv1) return false;
+    return fileURLToPath(import.meta.url) === path.resolve(argv1);
+  } catch (_) {
+    return false;
+  }
+})();
+
+if (isMain) {
+  main();
+}
+
+export { main };

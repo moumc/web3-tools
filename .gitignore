@@ -1,6 +1,8 @@
 # 配置文件（包含敏感信息，绝对不能进库）
 config/config.json
 config/config.local.json
+config/database.json
+config/tokens-export.json
 config/*.local.json
 .env
 .env.*
@@ -15,6 +17,15 @@ node_modules/
 # 日志
 logs/
 *.log
+
+# 输出与覆盖率产物
+output/
+coverage/
+
+# 用户数据 xlsx（地址、批量分发表等，禁止入库）
+*.xlsx
+!config/**/*.xlsx
+!docs/**/*.xlsx
 
 # IDE
 .claude/
